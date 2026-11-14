@@ -318,6 +318,22 @@ export function deriveClassification(
   input: ClassificationInput,
   config: AnalysisConfig,
 ): { quality: QualityLevel; annotations: readonly import("./types").Annotation[] } {
+  // NaN/Infinity guard: non-finite epLoss/cpLoss cannot produce a valid
+  // classification. Reject explicitly instead of silently falling through
+  // to "Best" (which is what NaN comparisons would produce).
+  if (!Number.isFinite(input.epLoss)) {
+    throw new ContractViolation(
+      "Classification",
+      `epLoss must be finite, got ${input.epLoss}`,
+    );
+  }
+  if (!Number.isFinite(input.cpLoss)) {
+    throw new ContractViolation(
+      "Classification",
+      `cpLoss must be finite, got ${input.cpLoss}`,
+    );
+  }
+
   const verdict = computeMateVerdict(
     input.evalAfterPlayed.eval,
     input.evalAfterBest.eval,

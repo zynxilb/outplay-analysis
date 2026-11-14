@@ -27,3 +27,21 @@ D7. Motifs: 5 detectors for MVP (fork, pin, skewer, discovered, removing defende
 D8. Testing: regression dataset (must pass) + validation dataset (release gate).
 D9. Structure: lib/analysis/ is authoritative, old files migrate incrementally.
 D10. Branch: main (analysis-only repo). outplay-ui stays deployable separately.
+
+
+## Post-Stage-8 Reviews
+
+After Stage 8 ships, run the following reviews before public launch:
+
+- **Chess Expert** — validate classifier thresholds + motif detection
+  against real chess intuition. Flag disagreements.
+- **Test Designer** — audit test coverage for untested invariants.
+- **Arabic Curator** — review all Arabic text for naturalness. No
+  translation-from-English feel.
+- **UX Reviewer** — review the actual interface (not spec). One pass
+  before launch, one after first feedback round.
+- **Legal/Safety** — before any feature involving minors (community,
+  coach tools, direct messaging).
+
+Iterate on findings until product is "best it can be." Do not skip
+any review because "we're close."
