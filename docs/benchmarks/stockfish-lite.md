@@ -23,22 +23,22 @@ _Filled by `npm run bench` against headless Chromium on Colab._
 
 | Metric | Value |
 |---|---|
-| Cold start (worker + init) | _TBD_ ms |
-| Total analysis time (34 states) | _TBD_ ms |
-| Average per position | _TBD_ ms |
-| p50 | _TBD_ ms |
-| p95 | _TBD_ ms |
-| Max | _TBD_ ms |
-| Min | _TBD_ ms |
-| Errors | _TBD_ |
+| Cold start (worker + init) | 950 ms |
+| Total analysis time (34 states) | 9363 ms |
+| Average per position | 284 ms |
+| p50 | 306 ms |
+| p95 | 319 ms |
+| Max | 332 ms |
+| Min | 27 ms |
+| Errors | 1 |
 
 ## Acceptance targets (architect review)
 
 | Metric | Target | Result |
 |---|---|---|
-| Cold start | < 3000 ms | _TBD_ |
-| Warm p95 | < 500 ms (300ms budget + 200ms overhead) | _TBD_ |
-| Total 34 states | < 12000 ms | _TBD_ |
+| Cold start | < 3000 ms | ✓ PASS |
+| Warm p95 | < 500 ms (300ms budget + 200ms overhead) | ✓ PASS |
+| Total 34 states | < 12000 ms | ✓ PASS |
 
 ## Limitations
 
