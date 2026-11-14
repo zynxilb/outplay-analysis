@@ -42,7 +42,12 @@ async function main() {
     if (result.status !== "complete") functionalFailures.push(`status="${result.status}" (expected "complete")`);
     if (result.moveCount !== 33) functionalFailures.push(`moveCount=${result.moveCount} (expected 33)`);
     if (result.lastMoveSan !== "Rd8#") functionalFailures.push(`lastMoveSan="${result.lastMoveSan}" (expected "Rd8#")`);
+    if (result.lastMoveQuality !== "Best") functionalFailures.push(`lastMoveQuality="${result.lastMoveQuality}" (expected "Best")`);
+    if (result.firstMoveSan !== "e4") functionalFailures.push(`firstMoveSan="${result.firstMoveSan}" (expected "e4")`);
     if (result.failuresCount !== 0) functionalFailures.push(`failuresCount=${result.failuresCount} (expected 0)`);
+    if (result.explanationsCount !== 0) functionalFailures.push(`explanationsCount=${result.explanationsCount} (expected 0 — Stage 4 scope)`);
+    if (result.refutationsCount !== 0) functionalFailures.push(`refutationsCount=${result.refutationsCount} (expected 0 — Stage 4 scope)`);
+    if (result.rootsCount !== result.pvsCount) functionalFailures.push(`rootsCount=${result.rootsCount} != pvsCount=${result.pvsCount}`);
 
     if (functionalFailures.length > 0) {
       console.error("\n=== FUNCTIONAL FAILURES ===");
@@ -55,12 +60,18 @@ async function main() {
     console.log(`Total: ${result.totalMs.toFixed(0)}ms (target: ${TARGET_MS}ms)`);
     const over = result.totalMs > TARGET_MS;
     if (over) {
-      console.warn(`  ⚠ OVER target by ${(result.totalMs - TARGET_MS).toFixed(0)}ms`);
+      console.error(`  ✗ OVER target by ${(result.totalMs - TARGET_MS).toFixed(0)}ms`);
     } else {
       console.log(`  ✓ UNDER target by ${(TARGET_MS - result.totalMs).toFixed(0)}ms`);
     }
 
-    console.log("\n=== PASS (functional) ===");
+    if (over) {
+      console.error("\n=== FAILED (timing) ===");
+      await browser.close();
+      process.exit(1);
+    }
+
+    console.log("\n=== PASS ===");
     await browser.close();
     process.exit(0);
   } catch (e) {

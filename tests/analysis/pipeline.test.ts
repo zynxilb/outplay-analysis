@@ -302,3 +302,163 @@ test("blocker_signal_aborted_before_start", async () => {
   assert.equal(result.moves.length, 0);
   assert.ok(result.failures.some((f) => /cancelled before start/i.test(f.reason)));
 });
+
+
+// ═══════════════════════════════════════════════════════════
+// Active cancellation — engine.abort() must be invoked
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Deferred mock engine: search() returns a promise that only settles
+ * when the test triggers abort() or an explicit resolve().
+ * Tracks abort() call count so tests can assert it was invoked.
+ */
+class DeferredMockEngine implements EngineLayer {
+  private pending: Array<{
+    resolve: (v: { root: AnalysisRoot; pv: PVRecord }) => void;
+    reject: (e: Error) => void;
+    fen: string;
+    purpose: AnalysisPurpose;
+    budget: SearchBudget;
+  }> = [];
+  abortCount = 0;
+
+  async initialize(): Promise<void> {}
+  async dispose(): Promise<void> {}
+
+  async abort(): Promise<void> {
+    this.abortCount++;
+    const pending = this.pending;
+    this.pending = [];
+    for (const p of pending) {
+      const e = new Error("Search aborted");
+      e.name = "AbortError";
+      p.reject(e);
+    }
+  }
+
+  async search(
+    fen: string,
+    purpose: AnalysisPurpose,
+    budget: SearchBudget,
+  ): Promise<{ root: AnalysisRoot; pv: PVRecord }> {
+    return new Promise((resolve, reject) => {
+      this.pending.push({ resolve, reject, fen, purpose, budget });
+    });
+  }
+
+  /** Manually resolve all pending (used to prove abort did not fire). */
+  resolveAll(): void {
+    const pending = this.pending;
+    this.pending = [];
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      const root: AnalysisRoot = {
+        id: `deferred-root-${i}`,
+        fen: p.fen,
+        sideToMove: p.fen.includes(" w ") ? "w" : "b",
+        purpose: p.purpose,
+        engineIdentity: FIXTURE_ENGINE_IDENTITY,
+        configHash: FIXTURE_CONFIG_HASH,
+        evaluationPerspective: "white",
+        searchBudget: p.budget,
+      };
+      const pv: PVRecord = {
+        id: `deferred-pv-${i}`,
+        rootId: root.id,
+        rootEval: { type: "cp", value: 20 },
+        depth: 10,
+        stability: "stable",
+        moves: [{ uci: "e2e4", san: "e4", evalAfter: { type: "unknown" } }],
+        createdAt: Date.now(),
+      };
+      p.resolve({ root, pv });
+    }
+  }
+
+  getPendingCount(): number {
+    return this.pending.length;
+  }
+}
+
+test("cancellation_during_active_pre_move_search", async () => {
+  const engine = new DeferredMockEngine();
+  const ac = new AbortController();
+
+  // Start analysis — first search (pre-move for ply 1) will hang
+  const promise = analyzeGame(OPERA_PGN, CONFIG, {
+    engine,
+    signal: ac.signal,
+  });
+
+  // Give the pipeline a tick to enter the first search
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(engine.getPendingCount(), 1, "one search should be pending");
+
+  // Abort — must trigger engine.abort()
+  ac.abort();
+
+  const result = await promise;
+
+  assert.equal(engine.abortCount, 1, "engine.abort() must be called");
+  assert.equal(result.status, "partial");
+  assert.equal(result.moves.length, 0);
+  assert.equal(engine.getPendingCount(), 0, "no pending searches after abort");
+  // Failure must say "cancelled", NOT be a generic recoverable search fail
+  assert.ok(result.failures.some((f) => /cancelled/i.test(f.reason)));
+});
+
+test("cancellation_during_active_post_move_search", async () => {
+  const engine = new DeferredMockEngine();
+  const ac = new AbortController();
+
+  const promise = analyzeGame(OPERA_PGN, CONFIG, {
+    engine,
+    signal: ac.signal,
+  });
+
+  // Wait for first (pre-move) search to be pending
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(engine.getPendingCount(), 1);
+
+  // Resolve the first search so pipeline proceeds to post-move search
+  engine.resolveAll();
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Now the post-move search is pending
+  assert.equal(engine.getPendingCount(), 1);
+
+  // Abort — must trigger engine.abort()
+  ac.abort();
+
+  const result = await promise;
+
+  assert.ok(engine.abortCount >= 1, "engine.abort() must be called");
+  assert.equal(result.status, "partial");
+  assert.equal(engine.getPendingCount(), 0);
+  assert.ok(result.failures.some((f) => /cancelled/i.test(f.reason)));
+});
+
+test("cancellation_does_not_misclassify_as_recoverable_failure", async () => {
+  const engine = new DeferredMockEngine();
+  const ac = new AbortController();
+
+  const promise = analyzeGame(OPERA_PGN, CONFIG, { engine, signal: ac.signal });
+  await new Promise((r) => setTimeout(r, 20));
+  ac.abort();
+  const result = await promise;
+
+  // None of the failures should be a generic "search failed" without
+  // the "cancelled" qualifier.
+  const recoverableLike = result.failures.filter(
+    (f) =>
+      f.stage === "search" &&
+      !/cancel/i.test(f.reason) &&
+      !/Fatal/i.test(f.reason),
+  );
+  assert.equal(
+    recoverableLike.length,
+    0,
+    `unexpected recoverable-like failures: ${JSON.stringify(recoverableLike)}`,
+  );
+});

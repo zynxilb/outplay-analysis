@@ -188,6 +188,58 @@ async function runSearch(
 }
 
 // ═══════════════════════════════════════════════════════════
+// Cancellable search wrapper
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Run a search with external cancellation support.
+ *
+ * When signal is provided:
+ *   - Registers an abort listener BEFORE the search starts.
+ *   - The listener calls engine.abort() so the active Stockfish search
+ *     stops (not just observed as aborted after it completes).
+ *   - After the search resolves, rechecks signal.aborted — if abort
+ *     fired between search return and the await resume, we still
+ *     report aborted.
+ *   - Removes the listener on exit (success, throw, or abort).
+ *
+ * When signal is absent, behaves exactly like runSearch().
+ */
+async function runSearchWithCancellation(
+  engine: EngineLayer,
+  signal: AbortSignal | undefined,
+  fen: string,
+  budget: SearchBudget,
+  label: "pre" | "post",
+  ply: number,
+): Promise<SearchOutcome> {
+  if (!signal) {
+    return runSearch(engine, fen, budget, label, ply);
+  }
+
+  // Fast path: already aborted
+  if (signal.aborted) return { kind: "aborted" };
+
+  const abortHandler = () => {
+    // Best-effort: engine may already be idle; swallow rejections.
+    void Promise.resolve(engine.abort()).catch(() => {});
+  };
+  signal.addEventListener("abort", abortHandler, { once: true });
+
+  try {
+    const outcome = await runSearch(engine, fen, budget, label, ply);
+    // Post-await recheck: if the signal fired after the engine search
+    // returned a result (e.g., between resolve and this line), treat
+    // as aborted — the caller asked to stop; we should not use the
+    // result.
+    if (signal.aborted) return { kind: "aborted" };
+    return outcome;
+  } finally {
+    signal.removeEventListener("abort", abortHandler);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // analyzeGame
 // ═══════════════════════════════════════════════════════════
 
@@ -276,7 +328,7 @@ export async function analyzeGame(
       // ── PRE-MOVE search ────────────────────────────────
       let preSearch = prevSearch;
       if (!preSearch) {
-        const outcome = await runSearch(engine, fromPos.fen, budget, "pre", plyNum);
+        const outcome = await runSearchWithCancellation(engine, signal, fromPos.fen, budget, "pre", plyNum);
         if (outcome.kind === "aborted") {
           failures.push({ ply: plyNum, stage: "search", reason: `Analysis cancelled during pre-move search` });
           stopped = true;
@@ -317,7 +369,7 @@ export async function analyzeGame(
         }
         rulesSourced = { eval: terminal.eval, fen: terminal.fen, rulesSource: "chess.js" };
       } else {
-        const outcome = await runSearch(engine, toPos.fen, budget, "post", plyNum);
+        const outcome = await runSearchWithCancellation(engine, signal, toPos.fen, budget, "post", plyNum);
         if (outcome.kind === "aborted") {
           failures.push({ ply: plyNum, stage: "search", reason: `Analysis cancelled during post-move search` });
           stopped = true;
