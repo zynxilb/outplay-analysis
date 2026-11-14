@@ -30,7 +30,7 @@ async function main() {
       { timeout: TIMEOUT_MS }
     );
 
-    const data = await page.evaluate(() => (window as any).__BENCHMARK_RESULTS__);
+    const data = await page.evaluate(() => window.__BENCHMARK_RESULTS__);
     console.log("\n=== BENCHMARK RESULTS ===");
     console.log(JSON.stringify(data, null, 2));
 

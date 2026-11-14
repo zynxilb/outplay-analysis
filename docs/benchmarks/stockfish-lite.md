@@ -11,12 +11,12 @@ _Fill in after running `npm run dev` + `node scripts/bench-stockfish.mjs`._
 
 | Metric | Value |
 |---|---|
-| Cold start (worker creation + UCI handshake) | _TBD_ ms |
-| First search (startpos) | _TBD_ ms |
-| Warm p50 | _TBD_ ms |
-| Warm p95 | _TBD_ ms |
-| Warm max | _TBD_ ms |
-| Opera Game (7 FENs, 300ms each) | _TBD_ ms |
+| Cold start (worker creation + UCI handshake) | 921 ms |
+| First search (startpos) | 304 ms |
+| Warm p50 | 309 ms |
+| Warm p95 | 352 ms |
+| Warm max | 352 ms |
+| Opera Game (7 FENs, 300ms each) | 2266 ms |
 
 ## Positions tested
 
@@ -39,9 +39,9 @@ _Fill in after running `npm run dev` + `node scripts/bench-stockfish.mjs`._
 
 | Metric | Target | Result |
 |---|---|---|
-| Cold start | < 3000 ms | _TBD_ |
-| Warm p95 | < 500 ms (300ms budget + 200ms overhead) | _TBD_ |
-| Opera Game (7 FENs) | < 5000 ms | _TBD_ |
+| Cold start | < 3000 ms | ✓ PASS |
+| Warm p95 | < 500 ms (300ms budget + 200ms overhead) | ✓ PASS |
+| Opera Game (7 FENs) | < 5000 ms | ✓ PASS |
 
 ## Limitations
 
