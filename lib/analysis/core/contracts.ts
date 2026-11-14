@@ -910,10 +910,27 @@ export function validatePlannedExplanation(
     cursor = step.consequence.id;
   }
 
-  // TODO(commit-2): supporting evidence must be causally connected to root
+  // Supporting evidence must be causally connected to at least one
+  // node in the explanation's causal structure (rootCause or any
+  // causalChain node). Presence in the graph alone is not enough — an
+  // unrelated node cannot be attached as "supporting".
+  const explanationNodeIds = new Set<string>([plan.rootCause.id]);
+  for (const step of plan.causalChain) {
+    explanationNodeIds.add(step.mechanism.id);
+    explanationNodeIds.add(step.consequence.id);
+  }
   for (const s of plan.supportingEvidence) {
     if (!graph.nodes.has(s.id))
       throw new ContractViolation("PlannedExplanation", `supporting evidence not in graph`);
+    const connected = Array.from(explanationNodeIds).some(
+      (id) => hasCausalPath(graph, id, s.id) || hasCausalPath(graph, s.id, id),
+    );
+    if (!connected) {
+      throw new ContractViolation(
+        "PlannedExplanation",
+        `supporting evidence "${s.id}" is not causally connected to the explanation`,
+      );
+    }
   }
 }
 
