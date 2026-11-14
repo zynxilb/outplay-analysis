@@ -56,6 +56,7 @@ interface PendingSearch {
   readonly resolve: (r: { root: AnalysisRoot; pv: PVRecord }) => void;
   readonly reject: (e: Error) => void;
   readonly timer: ReturnType<typeof setTimeout> | null;
+  abortRequested: boolean;
 }
 
 export class StockfishAdapter implements EngineLayer {
@@ -66,7 +67,10 @@ export class StockfishAdapter implements EngineLayer {
   private initReject: ((e: Error) => void) | null = null;
   private initTimer: ReturnType<typeof setTimeout> | null = null;
   private currentSearch: PendingSearch | null = null;
-  private queue: Array<() => void> = [];
+  private queue: Array<{
+    readonly run: () => void;
+    readonly reject: (e: Error) => void;
+  }> = [];
   private idCounter = 0;
   private readonly workerUrl: string;
   private readonly workerFactory: WorkerFactory;
@@ -143,11 +147,15 @@ export class StockfishAdapter implements EngineLayer {
         this.currentSearch = null;
         if (search.timer) clearTimeout(search.timer);
 
-        try {
-          const result = this.buildResult(search);
-          search.resolve(result);
-        } catch (e) {
-          search.reject(e instanceof Error ? e : new Error(String(e)));
+        if (search.abortRequested) {
+          search.reject(new DOMException("Search aborted", "AbortError"));
+        } else {
+          try {
+            const result = this.buildResult(search);
+            search.resolve(result);
+          } catch (e) {
+            search.reject(e instanceof Error ? e : new Error(String(e)));
+          }
         }
 
         if (this.state === "searching") {
@@ -175,9 +183,8 @@ export class StockfishAdapter implements EngineLayer {
       this.currentSearch = null;
     }
 
-    for (const fn of this.queue) {
-      // queued searches will fail via their own search() reject when they run
-      void fn;
+    for (const item of this.queue) {
+      item.reject(err);
     }
     this.queue = [];
     this.state = "disposed";
@@ -188,7 +195,7 @@ export class StockfishAdapter implements EngineLayer {
   private processQueue(): void {
     if (this.state !== "ready" || this.currentSearch) return;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) next.run();
   }
 
   async search(
@@ -202,7 +209,11 @@ export class StockfishAdapter implements EngineLayer {
     return new Promise((resolve, reject) => {
       const run = () => this.runSearch(fen, purpose, budget, resolve, reject);
       if (this.state === "ready") run();
-      else this.queue.push(run);
+      else if (this.state === "disposed") {
+        reject(new Error("Cannot search on disposed adapter"));
+      } else {
+        this.queue.push({ run, reject });
+      }
     });
   }
 
@@ -225,7 +236,16 @@ export class StockfishAdapter implements EngineLayer {
       }
     }, this.searchTimeoutMs);
 
-    this.currentSearch = { fen, purpose, budget, lines: [], resolve, reject, timer };
+    this.currentSearch = {
+      fen,
+      purpose,
+      budget,
+      lines: [],
+      resolve,
+      reject,
+      timer,
+      abortRequested: false,
+    };
 
     try {
       this.worker.postMessage(`position fen ${fen}`);
@@ -277,10 +297,14 @@ export class StockfishAdapter implements EngineLayer {
       const promotion = uci.length > 4 ? uci[4] : undefined;
       try {
         const m = chess.move({ from, to, promotion });
-        if (!m) break;
+        if (!m) {
+          throw new Error(`Illegal PV move "${uci}" at ply ${moves.length}`);
+        }
         moves.push({ uci, san: m.san, evalAfter: { type: "unknown" } });
-      } catch {
-        break;
+      } catch (e) {
+        throw new Error(
+          `Malformed PV: cannot replay "${uci}" at ply ${moves.length}: ${e instanceof Error ? e.message : String(e)}`
+        );
       }
     }
 
@@ -304,6 +328,10 @@ export class StockfishAdapter implements EngineLayer {
     const pvHeadByDepth = new Map<number, string>();
     for (const line of lines) {
       if (!line.startsWith("info")) continue;
+      if (line.includes(" lowerbound") || line.includes(" upperbound")) continue;
+      const multipvMatch = line.match(/\bmultipv (\d+)/);
+      const multipv = multipvMatch ? parseInt(multipvMatch[1], 10) : 1;
+      if (multipv !== 1) continue;
       const depthMatch = line.match(/\bdepth (\d+)/);
       const pvMatch = line.match(/\bpv (\S+)/);
       if (depthMatch && pvMatch) {
@@ -319,11 +347,10 @@ export class StockfishAdapter implements EngineLayer {
 
   async abort(): Promise<void> {
     if (this.state !== "searching" || !this.currentSearch) return;
+    this.currentSearch.abortRequested = true;
     try {
       this.worker?.postMessage("stop");
     } catch {}
-    // currentSearch is finalized when the "bestmove" line arrives.
-    // If the timeout fires first, handleFatal rejects it.
   }
 
   async dispose(): Promise<void> {
@@ -347,6 +374,10 @@ export class StockfishAdapter implements EngineLayer {
     this.initResolve = null;
     rej?.(new Error("Adapter disposed during init"));
 
+    const disposeErr = new Error("Adapter disposed");
+    for (const item of this.queue) {
+      item.reject(disposeErr);
+    }
     this.queue = [];
   }
 }

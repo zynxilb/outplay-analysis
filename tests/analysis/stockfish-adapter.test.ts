@@ -216,3 +216,211 @@ test("adapter_mate_keeps_absolute_winner", async () => {
   assert.deepEqual(pv.rootEval, { type: "mate", in: 3, winner: "white" });
   await a.dispose();
 });
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — P0 regression: aborted search rejects, never resolves
+// ═══════════════════════════════════════════════════════════
+
+test("adapter_abort_rejects_with_AbortError", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await a.initialize(engineCfg);
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) return;
+    if (data === "stop") {
+      queueMicrotask(() => {
+        w.emit("info depth 8 multipv 1 score cp 20 nodes 5000 pv e2e4");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  const p = a.search(
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "find-best-move",
+    { kind: "movetime", value: 5000 },
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  await a.abort();
+
+  await assert.rejects(p, (err: any) => {
+    assert.equal(err.name, "AbortError");
+    return true;
+  });
+  await a.dispose();
+});
+
+test("adapter_abort_does_not_return_partial_pv", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await a.initialize(engineCfg);
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) return;
+    if (data === "stop") {
+      queueMicrotask(() => {
+        w.emit("info depth 10 multipv 1 score cp 30 nodes 8000 pv e2e4 e7e5 g1f3");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  const p = a.search(
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "find-best-move",
+    { kind: "movetime", value: 5000 },
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  await a.abort();
+  await assert.rejects(p, /abort|aborted|AbortError/i);
+  await a.dispose();
+});
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — P1 regression: queued promises settle on fatal/dispose
+// ═══════════════════════════════════════════════════════════
+
+test("adapter_fatal_rejects_all_queued_promises", async () => {
+  const engine = new MockEngine();
+  engine.mode = { kind: "no_bestmove" };
+  const a = makeAdapter(engine, { searchTimeoutMs: 10000 });
+  await a.initialize(engineCfg);
+
+  const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  const p1 = a.search(fen, "find-best-move", { kind: "depth", value: 10 });
+  const p2 = a.search(fen, "find-best-move", { kind: "depth", value: 10 });
+  const p3 = a.search(fen, "find-best-move", { kind: "depth", value: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  engine.worker?.error("forced crash");
+
+  await assert.rejects(p1, /crash|Stockfish/);
+  await assert.rejects(p2, /crash|Stockfish/);
+  await assert.rejects(p3, /crash|Stockfish/);
+  await a.dispose();
+});
+
+test("adapter_dispose_rejects_queued_promises", async () => {
+  const engine = new MockEngine();
+  engine.mode = { kind: "no_bestmove" };
+  const a = makeAdapter(engine, { searchTimeoutMs: 10000 });
+  await a.initialize(engineCfg);
+
+  const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  const p1 = a.search(fen, "find-best-move", { kind: "depth", value: 10 });
+  const p2 = a.search(fen, "find-best-move", { kind: "depth", value: 10 });
+  await new Promise((r) => setTimeout(r, 50));
+  await a.dispose();
+
+  await assert.rejects(p1, /disposed/);
+  await assert.rejects(p2, /disposed/);
+});
+
+test("adapter_search_before_init_rejects", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await assert.rejects(
+    a.search("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "find-best-move", { kind: "depth", value: 10 }),
+    /Cannot search|uninitialized|state/i,
+  );
+});
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — P1 regression: stability ignores MultiPV noise
+// ═══════════════════════════════════════════════════════════
+
+test("adapter_stability_ignores_multipv_2", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await a.initialize(engineCfg);
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) {
+      queueMicrotask(() => {
+        w.emit("info depth 8 multipv 1 score cp 20 nodes 5000 pv e2e4 e7e5");
+        w.emit("info depth 8 multipv 2 score cp 15 nodes 5000 pv d2d4 d7d5");
+        w.emit("info depth 10 multipv 1 score cp 25 nodes 8000 pv e2e4 e7e5");
+        w.emit("info depth 10 multipv 2 score cp 18 nodes 8000 pv d2d4 d7d5");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  const { pv } = await a.search(
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "find-best-move",
+    { kind: "depth", value: 10 },
+  );
+  assert.equal(pv.stability, "stable");
+  await a.dispose();
+});
+
+test("adapter_stability_excludes_bounded_lines", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await a.initialize(engineCfg);
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) {
+      queueMicrotask(() => {
+        w.emit("info depth 8 multipv 1 score cp 20 nodes 5000 pv e2e4 e7e5");
+        w.emit("info depth 10 multipv 1 score cp 30 lowerbound nodes 8000 pv d2d4 d7d5");
+        w.emit("info depth 10 multipv 1 score cp 25 nodes 9000 pv e2e4 c7c5");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  const { pv } = await a.search(
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    "find-best-move",
+    { kind: "depth", value: 10 },
+  );
+  assert.equal(pv.stability, "stable");
+  await a.dispose();
+});
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — Safety: malformed PV throws (no silent truncation)
+// ═══════════════════════════════════════════════════════════
+
+test("adapter_rejects_malformed_pv", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine);
+  await a.initialize(engineCfg);
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) {
+      queueMicrotask(() => {
+        w.emit("info depth 10 multipv 1 score cp 30 nodes 8000 pv e2e4 a7a8");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  await assert.rejects(
+    a.search(
+      "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "find-best-move",
+      { kind: "depth", value: 10 },
+    ),
+    /Malformed PV|Illegal PV/,
+  );
+  await a.dispose();
+});
