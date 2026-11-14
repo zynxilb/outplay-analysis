@@ -19,6 +19,7 @@ import {
   validateComparisonCompatibility,
   validatePV,
   validatePvProvenance,
+  validateRulesSourcedEvaluation,
   validateSourcedEvaluation,
   computeConfigHash,
   type ValidationContext,
@@ -323,4 +324,120 @@ test("config_rejects_missing_version", () => {
   const bad = makeConfig();
   (bad as any).version = "";
   assert.throws(() => validateAnalysisConfig(bad), ContractViolation);
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// Contract v2 hardening — validateRulesSourcedEvaluation + FEN match
+// ═══════════════════════════════════════════════════════════
+
+// Terminal kind is imported inline to keep the test self-contained.
+type TermEval =
+  | { readonly type: "terminal"; readonly kind: "checkmate"; readonly winner: "white" | "black" }
+  | { readonly type: "terminal"; readonly kind: "stalemate" }
+  | { readonly type: "terminal"; readonly kind: "draw" };
+
+function rse(evalKind: TermEval, fen: string) {
+  return { eval: evalKind, fen, rulesSource: "chess.js" as const };
+}
+
+// Valid checkmate FENs (verified via chess.js semantics):
+// - White winner: back-rank mate, black to move.
+// - Black winner: mirrored, white to move.
+const CHECKMATE_WHITE_FEN = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";
+const CHECKMATE_BLACK_FEN = "6k1/8/8/8/8/8/5PPP/r5K1 w - - 0 1";
+const STALEMATE_FEN = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+const INSUFFICIENT_DRAW_FEN = "8/8/8/8/4k3/8/4K3/8 w - - 0 1";
+const SUFFICIENT_MATERIAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+// ─── Test 1: Valid checkmate (white winner) accepted ─────
+test("rse_accepts_valid_checkmate_white", () => {
+  assert.doesNotThrow(() =>
+    validateRulesSourcedEvaluation(
+      rse({ type: "terminal", kind: "checkmate", winner: "white" }, CHECKMATE_WHITE_FEN),
+    ),
+  );
+});
+
+// ─── Test 2: Checkmate with wrong winner rejected ────────
+test("rse_rejects_checkmate_with_wrong_winner", () => {
+  assert.throws(
+    () =>
+      validateRulesSourcedEvaluation(
+        // FEN has White as winner, but eval claims black
+        rse({ type: "terminal", kind: "checkmate", winner: "black" }, CHECKMATE_WHITE_FEN),
+      ),
+    ContractViolation,
+  );
+});
+
+// ─── Test 3: Valid stalemate accepted ────────────────────
+test("rse_accepts_valid_stalemate", () => {
+  assert.doesNotThrow(() =>
+    validateRulesSourcedEvaluation(
+      rse({ type: "terminal", kind: "stalemate" }, STALEMATE_FEN),
+    ),
+  );
+});
+
+// ─── Test 4: Non-stalemate labelled stalemate rejected ───
+test("rse_rejects_non_stalemate_labelled_stalemate", () => {
+  assert.throws(
+    () =>
+      validateRulesSourcedEvaluation(
+        rse({ type: "terminal", kind: "stalemate" }, SUFFICIENT_MATERIAL_FEN),
+      ),
+    ContractViolation,
+  );
+});
+
+// ─── Test 5: Insufficient-material draw accepted ─────────
+test("rse_accepts_insufficient_material_draw", () => {
+  assert.doesNotThrow(() =>
+    validateRulesSourcedEvaluation(
+      rse({ type: "terminal", kind: "draw" }, INSUFFICIENT_DRAW_FEN),
+    ),
+  );
+});
+
+// ─── Test 6: Draw with sufficient material rejected ──────
+test("rse_rejects_draw_with_sufficient_material", () => {
+  assert.throws(
+    () =>
+      validateRulesSourcedEvaluation(
+        rse({ type: "terminal", kind: "draw" }, SUFFICIENT_MATERIAL_FEN),
+      ),
+    ContractViolation,
+  );
+});
+
+// ─── Test 7: Black-winner checkmate mirror ───────────────
+test("rse_accepts_valid_checkmate_black", () => {
+  assert.doesNotThrow(() =>
+    validateRulesSourcedEvaluation(
+      rse({ type: "terminal", kind: "checkmate", winner: "black" }, CHECKMATE_BLACK_FEN),
+    ),
+  );
+});
+
+// ─── Test 8: FEN mismatch in ComparisonCompatibility rejected ───
+test("comparison_rejects_rules_sourced_fen_mismatch", () => {
+  const m = makeCtx();
+  const input = makeClassificationInput(m);
+  // Replace evalAfterPlayed with a rules-sourced terminal whose FEN
+  // does not match input.postMoveFen.
+  const badInput = {
+    ...input,
+    evalAfterPlayed: rse(
+      { type: "terminal", kind: "checkmate", winner: "white" } as TermEval,
+      CHECKMATE_WHITE_FEN, // != input.postMoveFen
+    ),
+  };
+  assert.throws(
+    () => validateComparisonCompatibility(badInput as any, m.ctx),
+    (err: unknown) => {
+      if (!(err instanceof ContractViolation)) return false;
+      return /evalAfterPlayed\.fen|postMoveFen/.test(err.message);
+    },
+  );
 });

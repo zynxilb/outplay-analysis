@@ -45,8 +45,9 @@ function fakeTerminalEval(ev: AnyEvaluation): RulesSourcedEvaluation {
         fen = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
         break;
       case "draw":
-        // Insufficient material: K vs K (no pawns, no pieces).
-        fen = "8/8/8/8/8/4k3/4K3/8 w - - 0 1";
+        // Insufficient material: K vs K, kings separated (e4/e2 with e3
+        // empty). Adjacent kings (e3/e2) would be an illegal position.
+        fen = "8/8/8/8/4k3/8/4K3/8 w - - 0 1";
         break;
       default: {
         const _e: never = ev.kind;
