@@ -1,11 +1,11 @@
 // scripts/bench-stockfish.mjs
-// Run the benchmark page headlessly, extract results, print JSON.
-// Requires: `npm run dev` running on :3000
+// Headless Chromium benchmark runner.
+// Requires `npm run dev` on :3000 (or BENCH_URL override).
 
 import { chromium } from "playwright";
 
 const URL = process.env.BENCH_URL ?? "http://localhost:3000/dev/engine-benchmark";
-const TIMEOUT_MS = 120_000;
+const TIMEOUT_MS = 180_000;
 
 async function main() {
   console.log(`Navigating to ${URL}...`);

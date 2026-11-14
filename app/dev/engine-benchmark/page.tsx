@@ -1,231 +1,189 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Chess } from "chess.js";
+import { StockfishAdapter } from "@/lib/analysis/engine/stockfish";
+import type { AnalysisConfig, SearchBudget } from "@/lib/analysis/core/types";
 
-const OPERA_GAME_PGNS = [
-  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-  "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-  "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
-  "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-  "rnbqkbnr/ppp2ppp/3p4/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3",
-  "rnbqkbnr/ppp2ppp/3p4/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq d3 0 3",
-  "rnbqkbnr/ppp2ppp/3p4/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b KQkq d3 0 3",
-];
+// Morphy's Opera Game, Paris 1858
+const OPERA_PGN = `1.e4 e5 2.Nf3 d6 3.d4 Bg4 4.dxe5 Bxf3 5.Qxf3 dxe5 6.Bc4 Nf6 7.Qb3 Qe7 8.Nc3 c6 9.Bg5 b5 10.Nxb5 cxb5 11.Bxb5+ Nbd7 12.O-O-O Rd8 13.Rxd7 Rxd7 14.Rd1 Qe6 15.Bxd7+ Nxd7 16.Qb8+ Nxb8 17.Rd8#`;
 
-type BenchResult = {
-  name: string;
+const SEARCH_BUDGET: SearchBudget = { kind: "movetime", value: 300 };
+
+const BENCH_CONFIG: AnalysisConfig = {
+  version: "bench-v1",
+  engine: { identity: "sf-19.0.1-lite-single", hashMb: 32, multiPv: 1 },
+  budgets: {
+    initialDepth: 10, refinementDepth: 14, finalDepth: 18,
+    initialTargetMs: 500, reSearchMs: 300,
+  },
+  evaluation: {
+    epCoefficient: 0.00368208,
+    mateOrderingValue: 10000,
+    evaluationModelVersion: "ep-v1",
+  },
+  classification: {
+    epLossThresholds: {
+      Best: 0, Excellent: 0.01, Good: 0.03, Inaccuracy: 0.05,
+      Mistake: 0.10, Blunder: 0.15,
+    },
+    cpLossSecondaryThreshold: 200,
+    brilliantSeeThreshold: 300,
+    missExpectedGainThreshold: 0.10,
+    mateDistanceTiers: { excellent: 1, good: 3, inaccuracy: 6, mistake: 10 },
+  },
+  motifs: { enabled: ["fork"], precisionTargets: { fork: 0.95 } },
+  explanation: { secondaryContributionRatio: 0.25 },
+};
+
+type PositionResult = {
+  ply: number;
   fen: string;
-  status: "pending" | "ok" | "error";
-  elapsedMs?: number;
-  depth?: number;
-  nodes?: number;
-  bestmove?: string;
-  pvLen?: number;
-  error?: string;
+  san: string;
+  elapsedMs: number;
+  depth: number;
+  bestmove: string;
+  stability: string;
+  scoreValue: string;
 };
 
-type Stats = {
-  coldStartMs: number | null;
-  firstSearchMs: number | null;
-  warmSearchMs: number[];
-  p50: number | null;
-  p95: number | null;
-  max: number | null;
+type Summary = {
+  totalPositions: number;
+  totalMs: number;
+  avgMs: number;
+  coldStartMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  minMs: number;
+  errorCount: number;
 };
 
-const STRESS_POSITIONS = [
-  {
-    name: "startpos",
-    fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-  },
-  {
-    name: "italian-mid",
-    fen: "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
-  },
-  {
-    name: "kiwipete",
-    fen: "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-  },
-  {
-    name: "endgame-kp",
-    fen: "8/8/8/8/8/4k3/4p3/4K3 w - - 0 1",
-  },
-  {
-    name: "mate-in-2",
-    fen: "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
-  },
-];
+function buildPositionsFromPgn(pgn: string): Array<{ fen: string; san: string; ply: number }> {
+  const chess = new Chess();
+  chess.loadPgn(pgn);
+  const history = chess.history({ verbose: true });
+
+  const result: Array<{ fen: string; san: string; ply: number }> = [];
+  const replay = new Chess();
+  result.push({ fen: replay.fen(), san: "(start)", ply: 0 });
+  for (let i = 0; i < history.length; i++) {
+    replay.move(history[i].san);
+    result.push({ fen: replay.fen(), san: history[i].san, ply: i + 1 });
+  }
+  return result;
+}
+
+function computeSummary(results: PositionResult[], coldStartMs: number): Summary {
+  const times = results.map((r) => r.elapsedMs).sort((a, b) => a - b);
+  const n = times.length;
+  const total = times.reduce((a, b) => a + b, 0);
+  return {
+    totalPositions: n,
+    totalMs: total,
+    avgMs: n ? total / n : 0,
+    coldStartMs,
+    minMs: n ? times[0] : 0,
+    maxMs: n ? times[n - 1] : 0,
+    p50Ms: n ? times[Math.floor(n * 0.5)] : 0,
+    p95Ms: n ? times[Math.min(n - 1, Math.floor(n * 0.95))] : 0,
+    errorCount: 0,
+  };
+}
 
 export default function EngineBenchmarkPage() {
-  const [results, setResults] = useState<BenchResult[]>([]);
-  const [stats, setStats] = useState<Stats>({
-    coldStartMs: null,
-    firstSearchMs: null,
-    warmSearchMs: [],
-    p50: null,
-    p95: null,
-    max: null,
-  });
+  const [results, setResults] = useState<PositionResult[]>([]);
+  const [summary, setSummary] = useState<Summary | null>(null);
   const [phase, setPhase] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [overallError, setOverallError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
 
   const log = (s: string) => setLogs((prev) => [...prev, s]);
 
   useEffect(() => {
     let cancelled = false;
+    let adapter: StockfishAdapter | null = null;
 
     (async () => {
       try {
         setPhase("running");
-        log("Starting benchmark");
+        log("Building positions from Opera Game PGN...");
 
-        const workerUrl = "/engine/stockfish-19-lite-single.js";
+        const positions = buildPositionsFromPgn(OPERA_PGN);
+        log(`${positions.length} board states (initial + ${positions.length - 1} plies)`);
+        setProgress({ done: 0, total: positions.length });
 
-        // ── Cold start ──
-        const coldStartTime = performance.now();
-        const worker = new Worker(workerUrl);
-        log("Worker created");
-
-        const initPromise = new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error("init timeout")), 15000);
-          let uciOk = false;
-          worker.onmessage = (ev) => {
-            const data = (ev.data as string).trim();
-            if (data === "uciok" && !uciOk) {
-              uciOk = true;
-              worker.postMessage("setoption name Hash value 32");
-              worker.postMessage("setoption name MultiPV value 1");
-              worker.postMessage("isready");
-            } else if (data === "readyok") {
-              clearTimeout(timeout);
-              resolve();
-            }
-          };
-          worker.onerror = (ev) => {
-            clearTimeout(timeout);
-            reject(new Error("worker error: " + (ev.message ?? "unknown")));
-          };
-          worker.postMessage("uci");
+        log("Initializing StockfishAdapter...");
+        const coldStart = performance.now();
+        adapter = new StockfishAdapter({
+          workerUrl: "/engine/stockfish-19-lite-single.js",
+          initTimeoutMs: 15000,
+          searchTimeoutMs: 30000,
         });
-
-        await initPromise;
-        const coldStartMs = performance.now() - coldStartTime;
+        await adapter.initialize(BENCH_CONFIG.engine);
+        const coldStartMs = performance.now() - coldStart;
         log(`Cold start: ${coldStartMs.toFixed(0)}ms`);
+
         if (cancelled) return;
 
-        // ── Search runner ──
-        const runSearch = async (fen: string, name: string): Promise<BenchResult> => {
-          const start = performance.now();
-          return new Promise<BenchResult>((resolve) => {
-            const timeout = setTimeout(() => {
-              worker.postMessage("stop");
-              resolve({ name, fen, status: "error", error: "search timeout" });
-            }, 20000);
+        const collected: PositionResult[] = [];
+        let errorCount = 0;
 
-            let bestmove: string | null = null;
-            let finalDepth = 0;
-            let finalNodes = 0;
-            let pvLen = 0;
+        for (let i = 0; i < positions.length; i++) {
+          if (cancelled) return;
+          const pos = positions[i];
+          setProgress({ done: i, total: positions.length });
 
-            const onMsg = (ev: MessageEvent) => {
-              const data = (ev.data as string).trim();
-              if (data.startsWith("info") && data.includes(" pv ")) {
-                const depthM = data.match(/\bdepth (\d+)/);
-                if (depthM) finalDepth = parseInt(depthM[1], 10);
-                const nodesM = data.match(/\bnodes (\d+)/);
-                if (nodesM) finalNodes = parseInt(nodesM[1], 10);
-                const pvM = data.match(/\bpv (.+)$/);
-                if (pvM) pvLen = pvM[1].split(/\s+/).length;
-              } else if (data.startsWith("bestmove")) {
-                bestmove = data.split(/\s+/)[1] ?? null;
-              }
-            };
+          try {
+            const start = performance.now();
+            const { root, pv } = await adapter.search(pos.fen, "find-best-move", SEARCH_BUDGET);
+            const elapsed = performance.now() - start;
 
-            const checkDone = () => {
-              if (bestmove) {
-                clearTimeout(timeout);
-                worker.removeEventListener("message", onMsg);
-                const elapsed = performance.now() - start;
-                resolve({
-                  name, fen, status: "ok",
-                  elapsedMs: elapsed,
-                  depth: finalDepth,
-                  nodes: finalNodes,
-                  bestmove: bestmove ?? undefined,
-                  pvLen,
-                });
-              } else {
-                setTimeout(checkDone, 50);
-              }
-            };
+            let scoreValue = "unknown";
+            if (pv.rootEval.type === "cp") scoreValue = `cp ${pv.rootEval.value}`;
+            else if (pv.rootEval.type === "mate") scoreValue = `mate ${pv.rootEval.in} (${pv.rootEval.winner})`;
 
-            worker.addEventListener("message", onMsg);
-            worker.postMessage(`position fen ${fen}`);
-            worker.postMessage("go movetime 300");
-            checkDone();
-          });
-        };
-
-        // ── First search (startpos) ──
-        const first = await runSearch(STRESS_POSITIONS[0].fen, "first:" + STRESS_POSITIONS[0].name);
-        log(`First search: ${first.elapsedMs?.toFixed(0)}ms`);
-        if (cancelled) { worker.terminate(); return; }
-
-        // ── Warm searches ──
-        const warmResults: BenchResult[] = [first];
-        const warmTimes: number[] = [];
-        for (const pos of STRESS_POSITIONS.slice(1)) {
-          const r = await runSearch(pos.fen, pos.name);
-          warmResults.push(r);
-          if (r.status === "ok" && r.elapsedMs) warmTimes.push(r.elapsedMs);
-          log(`${pos.name}: ${r.elapsedMs?.toFixed(0)}ms d${r.depth}`);
-          if (cancelled) { worker.terminate(); return; }
+            collected.push({
+              ply: pos.ply,
+              fen: pos.fen,
+              san: pos.san,
+              elapsedMs: elapsed,
+              depth: pv.depth,
+              bestmove: pv.moves[0]?.san ?? "(none)",
+              stability: pv.stability,
+              scoreValue,
+            });
+            log(`[${i + 1}/${positions.length}] ply ${pos.ply} (${pos.san}): ${elapsed.toFixed(0)}ms, d${pv.depth}`);
+          } catch (e) {
+            errorCount++;
+            log(`[${i + 1}/${positions.length}] ERROR: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
 
-        // ── Opera Game full analysis ──
-        log("Opera Game analysis...");
-        const operaTimes: number[] = [];
-        const operaResults: BenchResult[] = [];
-        for (let i = 0; i < OPERA_GAME_PGNS.length; i++) {
-          const r = await runSearch(OPERA_GAME_PGNS[i], `opera-${i}`);
-          operaResults.push(r);
-          if (r.status === "ok" && r.elapsedMs) operaTimes.push(r.elapsedMs);
-          if (cancelled) { worker.terminate(); return; }
-        }
-
-        // ── Stats ──
-        const sorted = [...warmTimes].sort((a, b) => a - b);
-        const p50 = sorted.length ? sorted[Math.floor(sorted.length * 0.5)] : null;
-        const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] : null;
-        const max = sorted.length ? sorted[sorted.length - 1] : null;
-
-        const finalStats: Stats = {
-          coldStartMs,
-          firstSearchMs: first.elapsedMs ?? null,
-          warmSearchMs: warmTimes,
-          p50, p95, max,
-        };
-
-        setStats(finalStats);
-        setResults([...warmResults, ...operaResults]);
+        setProgress({ done: positions.length, total: positions.length });
+        const sum = computeSummary(collected, coldStartMs);
+        sum.errorCount = errorCount;
+        setResults(collected);
+        setSummary(sum);
         setPhase("done");
-        log("Done");
 
         // Expose for Playwright
         (window as any).__BENCHMARK_RESULTS__ = {
-          stats: finalStats,
-          results: [...warmResults, ...operaResults],
-          operaTotalMs: operaTimes.reduce((a, b) => a + b, 0),
-          operaAvgMs: operaTimes.length ? operaTimes.reduce((a, b) => a + b, 0) / operaTimes.length : null,
-          workerUrl,
+          summary: sum,
+          results: collected,
+          workerUrl: "/engine/stockfish-19-lite-single.js",
+          budget: SEARCH_BUDGET,
+          source: "Opera Game (Morphy 1858), 34 board states via chess.js PGN parse, StockfishAdapter",
         };
-
-        worker.terminate();
       } catch (e) {
         if (cancelled) return;
-        setOverallError(e instanceof Error ? e.message : String(e));
+        setError(e instanceof Error ? e.message : String(e));
         setPhase("error");
+      } finally {
+        if (adapter) {
+          try { await adapter.dispose(); } catch {}
+        }
       }
     })();
 
@@ -235,29 +193,40 @@ export default function EngineBenchmarkPage() {
   }, []);
 
   return (
-    <main className="min-h-screen p-6 bg-[#0D0E11] text-[#EEEEEE]" style={{ fontFamily: "var(--font-jetbrains-mono)", direction: "ltr" }}>
+    <main
+      className="min-h-screen p-6 bg-[#0D0E11] text-[#EEEEEE]"
+      style={{ fontFamily: "var(--font-jetbrains-mono)", direction: "ltr" }}
+    >
       <div className="max-w-4xl mx-auto space-y-6">
         <div>
-          <h1 className="text-2xl font-bold">Engine Benchmark</h1>
-          <p className="text-sm text-[#8B8F98]">Phase: <span data-testid="phase">{phase}</span></p>
+          <h1 className="text-2xl font-bold">Engine Benchmark — Opera Game</h1>
+          <p className="text-sm text-[#8B8F98]">
+            Phase: <span data-testid="phase">{phase}</span>
+            {progress.total > 0 && (
+              <span className="ml-4">
+                Progress: {progress.done}/{progress.total}
+              </span>
+            )}
+          </p>
         </div>
 
-        {overallError && (
+        {error && (
           <div className="border border-red-500 bg-red-950 p-3 text-red-300">
-            <strong>Error:</strong> {overallError}
+            <strong>Error:</strong> {error}
           </div>
         )}
 
-        {stats.coldStartMs !== null && (
+        {summary && (
           <div className="border border-[#1F2229] bg-[#16171B] p-4 space-y-2">
-            <h2 className="text-lg font-semibold">Summary</h2>
+            <h2 className="text-lg font-semibold">Summary — {summary.totalPositions} board states</h2>
             <table className="w-full text-sm">
               <tbody>
-                <tr><td className="text-[#8B8F98] w-48">Cold start:</td><td>{stats.coldStartMs.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">First search:</td><td>{stats.firstSearchMs?.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">Warm p50:</td><td>{stats.p50?.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">Warm p95:</td><td>{stats.p95?.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">Warm max:</td><td>{stats.max?.toFixed(0)} ms</td></tr>
+                <tr><td className="text-[#8B8F98] w-56">Cold start:</td><td>{summary.coldStartMs.toFixed(0)} ms</td></tr>
+                <tr><td className="text-[#8B8F98]">Total analysis time:</td><td>{summary.totalMs.toFixed(0)} ms ({summary.totalPositions} positions)</td></tr>
+                <tr><td className="text-[#8B8F98]">Average per position:</td><td>{summary.avgMs.toFixed(0)} ms</td></tr>
+                <tr><td className="text-[#8B8F98]">p50 / p95 / max:</td><td>{summary.p50Ms.toFixed(0)} / {summary.p95Ms.toFixed(0)} / {summary.maxMs.toFixed(0)} ms</td></tr>
+                <tr><td className="text-[#8B8F98]">Min:</td><td>{summary.minMs.toFixed(0)} ms</td></tr>
+                <tr><td className="text-[#8B8F98]">Errors:</td><td>{summary.errorCount}</td></tr>
               </tbody>
             </table>
           </div>
@@ -265,25 +234,29 @@ export default function EngineBenchmarkPage() {
 
         {results.length > 0 && (
           <div className="border border-[#1F2229] bg-[#16171B] p-4">
-            <h2 className="text-lg font-semibold mb-2">Searches ({results.length})</h2>
+            <h2 className="text-lg font-semibold mb-2">Positions ({results.length})</h2>
             <table className="w-full text-xs">
               <thead className="text-[#8B8F98]">
                 <tr>
-                  <th className="text-left">name</th>
+                  <th className="text-left">ply</th>
+                  <th className="text-left">san</th>
                   <th className="text-right">ms</th>
                   <th className="text-right">depth</th>
-                  <th className="text-right">nodes</th>
                   <th className="text-left">best</th>
+                  <th className="text-left">score</th>
+                  <th className="text-left">stability</th>
                 </tr>
               </thead>
               <tbody>
                 {results.map((r, i) => (
                   <tr key={i} className="border-t border-[#1F2229]">
-                    <td>{r.name}</td>
-                    <td className="text-right">{r.elapsedMs?.toFixed(0) ?? "-"}</td>
-                    <td className="text-right">{r.depth ?? "-"}</td>
-                    <td className="text-right">{r.nodes ?? "-"}</td>
-                    <td>{r.bestmove ?? r.error ?? "-"}</td>
+                    <td>{r.ply}</td>
+                    <td>{r.san}</td>
+                    <td className="text-right">{r.elapsedMs.toFixed(0)}</td>
+                    <td className="text-right">{r.depth}</td>
+                    <td>{r.bestmove}</td>
+                    <td>{r.scoreValue}</td>
+                    <td>{r.stability}</td>
                   </tr>
                 ))}
               </tbody>
@@ -294,7 +267,9 @@ export default function EngineBenchmarkPage() {
         {logs.length > 0 && (
           <details className="border border-[#1F2229] bg-[#16171B] p-3">
             <summary className="cursor-pointer text-sm text-[#8B8F98]">Logs ({logs.length})</summary>
-            <pre className="text-xs mt-2 whitespace-pre-wrap">{logs.join("\n")}</pre>
+            <pre className="text-xs mt-2 whitespace-pre-wrap max-h-96 overflow-y-auto">
+              {logs.join("\n")}
+            </pre>
           </details>
         )}
 
