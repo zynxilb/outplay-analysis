@@ -7,8 +7,8 @@
 // - Mate: derive absolute winner. Never flip winner after the fact.
 // - Mate distance stored in MOVES (not plies), matching AnalysisConfig.
 
-import type { Evaluation } from "../core/types";
-import type { RawScore } from "../engine/uci-parser";
+import type { Evaluation } from "../core/types.ts";
+import type { RawScore } from "../engine/uci-parser.ts";
 
 /**
  * Convert a raw UCI score to a canonical White-perspective Evaluation.
