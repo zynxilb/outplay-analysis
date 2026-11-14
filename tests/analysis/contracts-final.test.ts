@@ -199,10 +199,13 @@ test("derive_classification_preserves_annotations", () => {
 
 test("derive_classification_mate_lost_returns_blunder", () => {
   const s = makeSetup();
+  const base = makeClassInput(s);
+  // Contract v2: mate is now in evalBefore. expectedAfterBestMove projects
+  // mate(3) → mate(2). Played is cp(0) → lost → Blunder.
   const input: ClassificationInput = {
-    ...makeClassInput(s),
-    evalAfterBest: { ...makeClassInput(s).evalAfterBest, eval: { type: "mate", in: 3, winner: "white" } },
-    evalAfterPlayed: { ...makeClassInput(s).evalAfterPlayed, eval: cp(0) },
+    ...base,
+    evalBefore: { ...base.evalBefore, eval: { type: "mate", in: 3, winner: "white" } },
+    evalAfterPlayed: { ...base.evalAfterPlayed, eval: cp(0) },
   };
   const out = deriveClassification(input, s.cfg);
   assert.equal(out.quality, "Blunder");

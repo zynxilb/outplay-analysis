@@ -173,12 +173,12 @@ test("mate_verdict_both_mate_for_mover_played_faster_returns_gained", () => {
 
 const makeTransition = (
   afterPlayed: Evaluation,
-  afterBest: Evaluation,
+  expectedAfterBest: Evaluation,
   verdict: MateTransition["verdict"],
 ): MateTransition => ({
   before: cp(0),
   afterPlayed,
-  afterBest,
+  expectedAfterBest,
   moverColor: "w",
   verdict,
 });

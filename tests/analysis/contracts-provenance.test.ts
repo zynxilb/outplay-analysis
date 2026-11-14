@@ -275,19 +275,16 @@ test("comparison_rejects_same_pv_for_before_and_played", () => {
   assert.throws(() => validateComparisonCompatibility(bad, m.ctx), ContractViolation);
 });
 
-test("comparison_rejects_before_best_different_pvs", () => {
+test("comparison_rejects_played_sharing_pv_with_before", () => {
+  // Contract v2: evalAfterBest is removed. The remaining PV-sharing rule is:
+  // evalAfterPlayed must NOT share PV with evalBefore (different roots).
   const m = makeCtx();
   const input = makeClassificationInput(m);
-  const extraPv: PVRecord = { ...m.prePv, id: "extra-pv" };
-  const ctx2: ValidationContext = {
-    ...m.ctx,
-    pvs: new Map([...m.ctx.pvs, [extraPv.id, extraPv]]),
-  };
   const bad: ClassificationInput = {
     ...input,
-    evalAfterBest: { ...input.evalAfterBest, pvId: extraPv.id },
+    evalAfterPlayed: { ...input.evalAfterPlayed, pvId: input.evalBefore.pvId },
   };
-  assert.throws(() => validateComparisonCompatibility(bad, ctx2), ContractViolation);
+  assert.throws(() => validateComparisonCompatibility(bad, m.ctx), ContractViolation);
 });
 
 test("comparison_rejects_budget_value_mismatch", () => {
