@@ -26,4 +26,4 @@ D6. Refutation: two-root PV, three line modes, threat vs consequence separated.
 D7. Motifs: 5 detectors for MVP (fork, pin, skewer, discovered, removing defender).
 D8. Testing: regression dataset (must pass) + validation dataset (release gate).
 D9. Structure: lib/analysis/ is authoritative, old files migrate incrementally.
-D10. Branch: dev/analysis-v2, main stays deployable.
+D10. Branch: main (analysis-only repo). outplay-ui stays deployable separately.
