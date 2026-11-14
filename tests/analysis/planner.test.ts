@@ -6,7 +6,7 @@ import {
   planExplanations,
   createExplanationPlanner,
 } from "../../lib/analysis/explain/planner.ts";
-import { ContractViolation } from "../../lib/analysis/core/contracts.ts";
+import { ContractViolation, validatePlannedExplanation } from "../../lib/analysis/core/contracts.ts";
 import type {
   CausalEdge,
   EvidenceGraph,
@@ -235,26 +235,96 @@ test("planner_rejects_mate_delivered_with_missing_edge", () => {
   assert.throws(() => planExplanations(graph), ContractViolation);
 });
 
-test("planner_rejects_disconnected_supporting_evidence", () => {
-  // Build a valid mate explanation, then add an unrelated node as
-  // supporting evidence via a synthetic plan. Since planner doesn't
-  // accept user-supplied supporting evidence, we test via
-  // buildMateDelivered's implicit validation by adding a disconnected
-  // node and forcing validation to run.
+
+
+
+// ═══════════════════════════════════════════════════════════
+// Direct validatePlannedExplanation tests (supporting evidence)
+// ═══════════════════════════════════════════════════════════
+
+test("validator_accepts_connected_supporting_evidence", () => {
+  // root → mid1 → mid2 → support. support connected via hasCausalPath.
+  const n1 = node("n1", "state_fact");
+  const n2 = node("n2", "mechanism");
+  const n3 = node("n3", "consequence");
+  const n4 = node("n4", "state_fact");
   const graph = makeGraph(
+    [n1, n2, n3, n4],
     [
-      node("mate_delivered_10", "state_fact"),
-      node("mate_delivered_game_over_10", "consequence"),
-      node("unrelated_20", "state_fact"), // disconnected
+      edge("n1", "n2", "enables"),
+      edge("n2", "n3", "causes"),
+      edge("n3", "n4", "causes"),
     ],
-    [edge("mate_delivered_10", "mate_delivered_game_over_10", "causes")],
   );
-  // planExplanations doesn't add supporting evidence, so this graph
-  // should still pass (no supporting evidence to reject).
-  const out = planExplanations(graph);
-  assert.equal(out.size, 1);
-  // The unrelated node exists but isn't attached — planner doesn't leak it.
-  if (out.get(10)?.status === "explained") {
-    assert.equal(out.get(10)!.primary.supportingEvidence.length, 0);
-  }
+  const plan = {
+    rootCause: n1,
+    causalChain: [{ mechanism: n2, consequence: n3 }],
+    supportingEvidence: [n4],
+    confidence: "verified" as const,
+  };
+  assert.doesNotThrow(() => validatePlannedExplanation(plan, graph));
+});
+
+test("validator_rejects_disconnected_supporting_evidence", () => {
+  // isolated node exists in graph but has no causal path to/from explanation
+  const n1 = node("n1", "state_fact");
+  const n2 = node("n2", "mechanism");
+  const n3 = node("n3", "consequence");
+  const n_isolated = node("isolated", "state_fact");
+  const graph = makeGraph(
+    [n1, n2, n3, n_isolated],
+    [
+      edge("n1", "n2", "enables"),
+      edge("n2", "n3", "causes"),
+    ],
+  );
+  const plan = {
+    rootCause: n1,
+    causalChain: [{ mechanism: n2, consequence: n3 }],
+    supportingEvidence: [n_isolated],
+    confidence: "verified" as const,
+  };
+  assert.throws(
+    () => validatePlannedExplanation(plan, graph),
+    /not causally connected/,
+  );
+});
+
+test("validator_rejects_supporting_node_absent_from_graph", () => {
+  const n1 = node("n1", "state_fact");
+  const n2 = node("n2", "mechanism");
+  const n3 = node("n3", "consequence");
+  const ghost = node("ghost_not_in_graph", "state_fact");
+  const graph = makeGraph(
+    [n1, n2, n3],
+    [edge("n1", "n2", "enables"), edge("n2", "n3", "causes")],
+  );
+  const plan = {
+    rootCause: n1,
+    causalChain: [{ mechanism: n2, consequence: n3 }],
+    supportingEvidence: [ghost],
+    confidence: "verified" as const,
+  };
+  assert.throws(
+    () => validatePlannedExplanation(plan, graph),
+    /not in graph/,
+  );
+});
+
+test("validator_rejects_missing_causal_edge", () => {
+  const n1 = node("n1", "state_fact");
+  const n2 = node("n2", "mechanism");
+  const n3 = node("n3", "consequence");
+  // No edges: hasCausalPath(n1, n2) will return false
+  const graph = makeGraph([n1, n2, n3], []);
+  const plan = {
+    rootCause: n1,
+    causalChain: [{ mechanism: n2, consequence: n3 }],
+    supportingEvidence: [],
+    confidence: "verified" as const,
+  };
+  assert.throws(
+    () => validatePlannedExplanation(plan, graph),
+    /no path/,
+  );
 });
