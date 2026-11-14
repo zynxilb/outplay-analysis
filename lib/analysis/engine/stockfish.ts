@@ -206,12 +206,16 @@ export class StockfishAdapter implements EngineLayer {
     if (this.state === "disposed") {
       throw new Error("Cannot search on disposed adapter");
     }
+    if (this.state === "uninitialized") {
+      throw new Error("Cannot search before initialize()");
+    }
     return new Promise((resolve, reject) => {
       const run = () => this.runSearch(fen, purpose, budget, resolve, reject);
       if (this.state === "ready") run();
       else if (this.state === "disposed") {
         reject(new Error("Cannot search on disposed adapter"));
       } else {
+        // state === "initializing" — will run when ready
         this.queue.push({ run, reject });
       }
     });
