@@ -27,6 +27,13 @@ const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 // Fool's mate: 1. f3 e5 2. g4 Qh4#
 const FOOLS_MATE_PGN = "1. f3 e5 2. g4 Qh4# 0-1";
+// Missed-mate setup: white to move has Ra8#, but plays Ra2. After that
+// black plays Kf8; game continues with Ra8+ (check, not mate).
+// Root FEN = MATE_IN_1_PRE. Ply 1 = Ra2 (missed mate).
+const MISSED_MATE_SETUP_PGN = `[SetUp "1"]
+[FEN "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1"]
+
+1. Ra2 Kf8 2. Ra8+`;
 
 // Mate-in-1 pre-move: white to move, Ra8# delivers mate
 const MATE_IN_1_PRE = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
@@ -209,7 +216,7 @@ function makeMissedMateSetup(
 
   const move = makeMove(1, "Ra2", playedEval, "Blunder", mateVerdict);
   const game = makeGame({
-    pgn: "", // synthetic — no game replay needed for missed_mate path
+    pgn: MISSED_MATE_SETUP_PGN,
     roots: new Map([["root-1", root]]),
     pvs: new Map([["pv-1", pv]]),
     moves: [move],

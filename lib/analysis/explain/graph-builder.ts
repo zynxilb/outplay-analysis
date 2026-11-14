@@ -26,6 +26,7 @@ import type {
   PVRecord,
   ProofEngine,
   ProofMechanical,
+  AnyEvaluation,
 } from "../core/types.ts";
 import { ContractViolation, validateEvidenceGraph } from "../core/contracts.ts";
 import { replayPgn } from "../pgn-replay.ts";
@@ -73,6 +74,10 @@ function getMoveOrThrow(ply: number, game: AnalyzedGame): ClassifiedMove {
 }
 
 /** Convert SAN to UCI by replaying from FEN. */
+function evalsEqual(a: AnyEvaluation, b: AnyEvaluation): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function sanToUci(fen: string, san: string): string | null {
   try {
     const c = new Chess(fen);
@@ -310,24 +315,56 @@ export function buildEvidenceGraph(
             `classified move evaluation != fact.evalAfterPlayed`,
           );
         }
-        // Blocker 2: verify the mate transition actually says "lost"
+        // Blocker 2: full MateTransition cross-validation
         if (!move.mateVerdict) {
           throw new ContractViolation(
             "EvidenceGraph",
             `MISSED_MATE requires move.mateVerdict, but it is null at ply ${fact.ply}`,
           );
         }
-        if (move.mateVerdict.verdict.kind !== "lost") {
+        const mv = move.mateVerdict;
+        if (mv.verdict.kind !== "lost") {
           throw new ContractViolation(
             "EvidenceGraph",
-            `MISSED_MATE requires move.mateVerdict.verdict.kind === "lost", got "${move.mateVerdict.verdict.kind}" at ply ${fact.ply}`,
+            `MISSED_MATE requires move.mateVerdict.verdict.kind === "lost", got "${mv.verdict.kind}" at ply ${fact.ply}`,
           );
         }
-        if (move.mateVerdict.before.type !== "mate") {
+        if (mv.before.type !== "mate") {
           throw new ContractViolation(
             "EvidenceGraph",
-            `MISSED_MATE requires mateVerdict.before to be a mate evaluation, got "${move.mateVerdict.before.type}"`,
+            `MISSED_MATE requires mateVerdict.before to be a mate evaluation, got "${mv.before.type}"`,
           );
+        }
+        // cross-validate: mateVerdict.before must equal pv.rootEval
+        if (!evalsEqual(mv.before, pv.rootEval)) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE mateVerdict.before does not match pv.rootEval`,
+          );
+        }
+        // cross-validate: mateVerdict.afterPlayed must equal move.evaluation
+        if (!evalsEqual(mv.afterPlayed, move.evaluation)) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE mateVerdict.afterPlayed does not match move.evaluation`,
+          );
+        }
+        // cross-validate: mateVerdict.moverColor must equal root.sideToMove
+        if (mv.moverColor !== root.sideToMove) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE mateVerdict.moverColor "${mv.moverColor}" != root.sideToMove "${root.sideToMove}"`,
+          );
+        }
+        // Bind root FEN to actual game position (Blocker 2B)
+        {
+          const actualMissedFens = getActualFensAtPly(fact.ply, game, positionsCache);
+          if (root.fen !== actualMissedFens.pre) {
+            throw new ContractViolation(
+              "EvidenceGraph",
+              `MISSED_MATE root.fen "${root.fen}" does not match actual game position at ply ${fact.ply} "${actualMissedFens.pre}"`,
+            );
+          }
         }
 
         const availId = nodeId("missed_mate", fact.ply, "available");
@@ -473,13 +510,19 @@ export function buildEvidenceGraph(
     }
   }
 
-  // Use actual game root, not the first evidence node (which may be terminal)
+  // Use actual game root, not the first evidence node (which may be terminal).
+  // If evidence exists, replay failure is a contract violation, not an empty root.
   let rootPositionFen = "";
-  try {
+  if (nodes.size > 0) {
     const positions = getPositionsCached(game, positionsCache);
     rootPositionFen = positions[0]?.fen ?? "";
-  } catch {
-    rootPositionFen = "";
+  } else {
+    try {
+      const positions = getPositionsCached(game, positionsCache);
+      rootPositionFen = positions[0]?.fen ?? "";
+    } catch {
+      rootPositionFen = "";
+    }
   }
 
   const graph: EvidenceGraph = {
