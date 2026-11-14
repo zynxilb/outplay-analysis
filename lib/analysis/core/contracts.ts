@@ -2,6 +2,7 @@
 // Outplay Analysis — Layer Contracts + Runtime Validators
 // Commit 1, Rev 11 (approved). See META.md for discipline rules.
 
+import { Chess } from "chess.js";
 import type {
   AnalysisRoot,
   AnalysisPurpose,
@@ -30,6 +31,9 @@ import type {
   ProofEngine,
   ProofConsequence,
   MechanicalRule,
+  AnyEvaluation,
+  TerminalEvaluation,
+  RulesSourcedEvaluation,
 } from "./types";
 
 // ═══════════════════════════════════════════════════════════
@@ -205,17 +209,66 @@ export function computeConfigHash(
 }
 
 // ═══════════════════════════════════════════════════════════
-// Mate Verdict (single source of truth — used by classifier + validator)
+// Mate projection + verdict (single source of truth)
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * Project an evaluation to the post-move boundary.
+ *
+ * The engine's `evalBefore` describes the pre-move position. To compare it
+ * against the played post-move position, we shift the mate distance as if
+ * the best move were played:
+ *
+ * - CP / tablebase / unknown → preserved
+ * - Mate for mover, in 1 → terminal checkmate for mover
+ * - Mate for mover, in N>1 → mate for mover in N-1
+ * - Mate against mover → preserved (winner and distance)
+ */
+export function expectedAfterBestMove(
+  evalBefore: Evaluation,
+  moverColor: "w" | "b",
+): AnyEvaluation {
+  const mover = moverColor === "w" ? "white" : "black";
+
+  if (evalBefore.type !== "mate") {
+    return evalBefore;
+  }
+
+  if (evalBefore.winner !== mover) {
+    // Opponent is mating us — their distance is not shortened by our move
+    return evalBefore;
+  }
+
+  // Mover is mating
+  if (evalBefore.in <= 1) {
+    return { type: "terminal", kind: "checkmate", winner: mover };
+  }
+  return { type: "mate", in: evalBefore.in - 1, winner: mover };
+}
+
+/**
+ * Normalize an AnyEvaluation to a mate-shape or null.
+ * Terminal checkmate is treated as mate in 0 for verdict comparison.
+ * Stalemate/draw → null (not a mate).
+ */
+function normalizeToMate(
+  ev: AnyEvaluation,
+): { type: "mate"; in: number; winner: "white" | "black" } | null {
+  if (ev.type === "mate") return ev;
+  if (ev.type === "terminal" && ev.kind === "checkmate") {
+    return { type: "mate", in: 0, winner: ev.winner };
+  }
+  return null;
+}
+
 export function computeMateVerdict(
-  played: Evaluation,
-  best: Evaluation,
+  played: AnyEvaluation,
+  best: AnyEvaluation,
   moverColor: "w" | "b",
 ): MateVerdict | null {
   const mover = moverColor === "w" ? "white" : "black";
-  const playMate = played.type === "mate" ? played : null;
-  const bestMate = best.type === "mate" ? best : null;
+  const playMate = normalizeToMate(played);
+  const bestMate = normalizeToMate(best);
 
   if (!playMate && !bestMate) return null;
 
@@ -318,9 +371,7 @@ export function deriveClassification(
   input: ClassificationInput,
   config: AnalysisConfig,
 ): { quality: QualityLevel; annotations: readonly import("./types").Annotation[] } {
-  // NaN/Infinity guard: non-finite epLoss/cpLoss cannot produce a valid
-  // classification. Reject explicitly instead of silently falling through
-  // to "Best" (which is what NaN comparisons would produce).
+  // NaN/Infinity guard
   if (!Number.isFinite(input.epLoss)) {
     throw new ContractViolation(
       "Classification",
@@ -334,9 +385,26 @@ export function deriveClassification(
     );
   }
 
+  const playedEval = input.evalAfterPlayed.eval;
+
+  // Terminal draws are unsupported at Stage 4 — the pipeline must record a
+  // failure rather than fabricate a classification. Checkmate is classifiable
+  // via mate transition logic.
+  if (playedEval.type === "terminal" && playedEval.kind !== "checkmate") {
+    throw new ContractViolation(
+      "Classification",
+      `terminal ${playedEval.kind} unsupported at Stage 4`,
+    );
+  }
+
+  const expectedAfterBest = expectedAfterBestMove(
+    input.evalBefore.eval,
+    input.moverColor,
+  );
+
   const verdict = computeMateVerdict(
-    input.evalAfterPlayed.eval,
-    input.evalAfterBest.eval,
+    playedEval,
+    expectedAfterBest,
     input.moverColor,
   );
 
@@ -465,48 +533,106 @@ export function validateComparisonCompatibility(
   ctx: ValidationContext,
 ): void {
   const beforePv = ctx.pvs.get(input.evalBefore.pvId);
-  const bestPv = ctx.pvs.get(input.evalAfterBest.pvId);
-  const playedPv = ctx.pvs.get(input.evalAfterPlayed.pvId);
-  if (!beforePv || !bestPv || !playedPv)
-    throw new ContractViolation("ComparisonCompatibility", "missing PV");
-
-  if (input.evalBefore.pvId !== input.evalAfterBest.pvId)
-    throw new ContractViolation(
-      "ComparisonCompatibility",
-      "evalBefore and evalAfterBest must share the same PV",
-    );
-  if (input.evalAfterPlayed.pvId === input.evalBefore.pvId)
-    throw new ContractViolation(
-      "ComparisonCompatibility",
-      "evalAfterPlayed must not share PV with evalBefore",
-    );
+  if (!beforePv)
+    throw new ContractViolation("ComparisonCompatibility", "missing evalBefore PV");
 
   const beforeRoot = ctx.roots.get(beforePv.rootId);
-  const playedRoot = ctx.roots.get(playedPv.rootId);
-  if (!beforeRoot || !playedRoot)
-    throw new ContractViolation("ComparisonCompatibility", "root not registered");
+  if (!beforeRoot)
+    throw new ContractViolation("ComparisonCompatibility", "evalBefore root not registered");
 
-  // MVP rule: exact budget match
-  if (beforeRoot.searchBudget.kind !== playedRoot.searchBudget.kind)
-    throw new ContractViolation(
-      "ComparisonCompatibility",
-      `budget kind mismatch: before=${beforeRoot.searchBudget.kind} played=${playedRoot.searchBudget.kind}`,
-    );
-  if (beforeRoot.searchBudget.value !== playedRoot.searchBudget.value)
-    throw new ContractViolation(
-      "ComparisonCompatibility",
-      `budget value mismatch: before=${beforeRoot.searchBudget.value} played=${playedRoot.searchBudget.value}`,
-    );
-
-  if (beforePv.stability !== "stable" || playedPv.stability !== "stable")
-    throw new ContractViolation(
-      "ComparisonCompatibility",
-      "compared PVs must be from stable searches",
-    );
-
+  // Validate evalBefore (always engine-sourced)
   validateSourcedEvaluation(input.evalBefore, input.preMoveRootId, ctx);
-  validateSourcedEvaluation(input.evalAfterBest, input.preMoveRootId, ctx);
-  validateSourcedEvaluation(input.evalAfterPlayed, input.postMoveRootId, ctx);
+
+  // Validate evalAfterPlayed (may be engine-sourced or rules-sourced)
+  if ("pvId" in input.evalAfterPlayed) {
+    const playedPv = ctx.pvs.get(input.evalAfterPlayed.pvId);
+    if (!playedPv)
+      throw new ContractViolation("ComparisonCompatibility", "missing evalAfterPlayed PV");
+
+    if (input.evalAfterPlayed.pvId === input.evalBefore.pvId)
+      throw new ContractViolation(
+        "ComparisonCompatibility",
+        "evalAfterPlayed must not share PV with evalBefore",
+      );
+
+    const playedRoot = ctx.roots.get(playedPv.rootId);
+    if (!playedRoot)
+      throw new ContractViolation("ComparisonCompatibility", "evalAfterPlayed root not registered");
+
+    // MVP rule: exact budget match
+    if (beforeRoot.searchBudget.kind !== playedRoot.searchBudget.kind)
+      throw new ContractViolation(
+        "ComparisonCompatibility",
+        `budget kind mismatch: before=${beforeRoot.searchBudget.kind} played=${playedRoot.searchBudget.kind}`,
+      );
+    if (beforeRoot.searchBudget.value !== playedRoot.searchBudget.value)
+      throw new ContractViolation(
+        "ComparisonCompatibility",
+        `budget value mismatch: before=${beforeRoot.searchBudget.value} played=${playedRoot.searchBudget.value}`,
+      );
+
+    if (beforePv.stability !== "stable" || playedPv.stability !== "stable")
+      throw new ContractViolation(
+        "ComparisonCompatibility",
+        "compared PVs must be from stable searches",
+      );
+
+    validateSourcedEvaluation(input.evalAfterPlayed, input.postMoveRootId, ctx);
+  } else {
+    // Rules-sourced terminal — verify against actual position
+    validateRulesSourcedEvaluation(input.evalAfterPlayed);
+  }
+}
+
+export function validateRulesSourcedEvaluation(
+  rse: RulesSourcedEvaluation,
+): void {
+  if (!rse.fen) {
+    throw new ContractViolation("RulesSourcedEvaluation", "fen required");
+  }
+  if (rse.rulesSource !== "chess.js") {
+    throw new ContractViolation(
+      "RulesSourcedEvaluation",
+      `unsupported rulesSource "${rse.rulesSource}"`,
+    );
+  }
+
+  const chess = new Chess(rse.fen);
+
+  switch (rse.eval.kind) {
+    case "checkmate":
+      if (!chess.isCheckmate()) {
+        throw new ContractViolation(
+          "RulesSourcedEvaluation",
+          `FEN is not checkmate: ${rse.fen}`,
+        );
+      }
+      // Verify winner: side-to-move is the one mated
+      {
+        const stm = rse.fen.trim().split(/\s+/)[1];
+        const expectedWinner = stm === "w" ? "black" : "white";
+        if (rse.eval.winner !== expectedWinner) {
+          throw new ContractViolation(
+            "RulesSourcedEvaluation",
+            `winner mismatch: FEN side-to-move ${stm} means ${expectedWinner} wins, but eval says ${rse.eval.winner}`,
+          );
+        }
+      }
+      break;
+    case "stalemate":
+      if (!chess.isStalemate()) {
+        throw new ContractViolation(
+          "RulesSourcedEvaluation",
+          `FEN is not stalemate: ${rse.fen}`,
+        );
+      }
+      break;
+    case "draw":
+      // Threefold repetition and 50-move require move history, which a
+      // standalone FEN does not carry. At Stage 4, accept the draw kind
+      // on trust; a future revision will require full move history here.
+      break;
+  }
 }
 
 export function validateClassificationInput(input: ClassificationInput): void {
@@ -849,20 +975,23 @@ export function validateExpectedScore(es: ExpectedScore): void {
 }
 
 export function validateMateTransition(t: MateTransition): void {
-  for (const [name, ev] of [
-    ["before", t.before],
-    ["afterPlayed", t.afterPlayed],
-    ["afterBest", t.afterBest],
-  ] as const) {
+  const checkEval = (name: string, ev: AnyEvaluation) => {
     if (ev.type === "mate") {
       if (!Number.isInteger(ev.in) || ev.in < 0)
         throw new ContractViolation("MateTransition", `${name}.in must be non-negative integer`);
       if (ev.winner !== "white" && ev.winner !== "black")
         throw new ContractViolation("MateTransition", `${name}.winner invalid`);
     }
-  }
+    if (ev.type === "terminal" && ev.kind === "checkmate") {
+      if (ev.winner !== "white" && ev.winner !== "black")
+        throw new ContractViolation("MateTransition", `${name}.terminal winner invalid`);
+    }
+  };
+  checkEval("before", t.before);
+  checkEval("afterPlayed", t.afterPlayed);
+  checkEval("expectedAfterBest", t.expectedAfterBest);
 
-  const expected = computeMateVerdict(t.afterPlayed, t.afterBest, t.moverColor);
+  const expected = computeMateVerdict(t.afterPlayed, t.expectedAfterBest, t.moverColor);
   if (expected === null)
     throw new ContractViolation(
       "MateTransition",

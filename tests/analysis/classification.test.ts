@@ -10,8 +10,10 @@ import {
 } from "../../lib/analysis/core/contracts.ts";
 import type {
   AnalysisConfig,
+  AnyEvaluation,
   ClassificationInput,
   Evaluation,
+  RulesSourcedEvaluation,
   SourcedEvaluation,
 } from "../../lib/analysis/core/types.ts";
 import {
@@ -28,7 +30,24 @@ function fakeEval(pvId: string, rootId: string, ev: Evaluation): SourcedEvaluati
   return { eval: ev, pvId, rootId, depth: 14 };
 }
 
+function fakeTerminalEval(ev: AnyEvaluation): RulesSourcedEvaluation {
+  // Known checkmate FEN (black to move, mated by white rook on a8)
+  // Known stalemate FEN (black king h8, white king g6, no other pieces)
+  let fen: string;
+  if (ev.type === "terminal" && ev.kind === "checkmate") {
+    fen = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";  // checkmate (black mated)
+  } else {
+    fen = "7k/8/6K1/8/8/8/8/8 b - - 0 1";  // stalemate
+  }
+  return {
+    eval: ev as RulesSourcedEvaluation["eval"],
+    fen,
+    rulesSource: "chess.js",
+  };
+}
+
 function buildInput(c: GoldenCase): ClassificationInput {
+  const playedIsTerminal = c.input.evalAfterPlayed.type === "terminal";
   return {
     ply: 1,
     san: "test",
@@ -42,8 +61,9 @@ function buildInput(c: GoldenCase): ClassificationInput {
       ? "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
       : "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
     evalBefore: fakeEval("pv-before", "root-pre", c.input.evalBefore),
-    evalAfterBest: fakeEval("pv-best", "root-pre", c.input.evalAfterBest),
-    evalAfterPlayed: fakeEval("pv-played", "root-post", c.input.evalAfterPlayed),
+    evalAfterPlayed: playedIsTerminal
+      ? fakeTerminalEval(c.input.evalAfterPlayed)
+      : fakeEval("pv-played", "root-post", c.input.evalAfterPlayed as Evaluation),
     epLoss: c.input.epLoss,
     cpLoss: c.input.cpLoss,
     annotations: c.input.annotations,

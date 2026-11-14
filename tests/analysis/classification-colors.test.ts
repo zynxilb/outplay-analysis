@@ -52,7 +52,6 @@ function buildInput(
       ? "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
       : "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
     evalBefore: fakeEval("pv-before", "root-pre", whiteCP),
-    evalAfterBest: fakeEval("pv-best", "root-pre", whiteCP),
     evalAfterPlayed: fakeEval("pv-played", "root-post", whiteCP),
     epLoss,
     cpLoss,
@@ -96,15 +95,15 @@ for (const [epLoss, cpLoss, expected] of MIRROR_PAIRS) {
   });
 }
 
-// Mate mirrored: if White preserves mate, Black preserving mate → both Best
-test("mirror: mate preserved → Best for both colors", () => {
+// Mate preserved (after projection): both colors → Best
+test("mirror: mate preserved (projected) → Best for both colors", () => {
   const whiteInput = buildInput(0, 0, "w");
-  whiteInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "mate", in: 3, winner: "white" });
-  whiteInput.evalAfterBest = fakeEval("pv-best", "root-pre", { type: "mate", in: 3, winner: "white" });
+  whiteInput.evalBefore = fakeEval("pv-before", "root-pre", { type: "mate", in: 3, winner: "white" });
+  whiteInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "mate", in: 2, winner: "white" });
 
   const blackInput = buildInput(0, 0, "b");
-  blackInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "mate", in: 3, winner: "black" });
-  blackInput.evalAfterBest = fakeEval("pv-best", "root-pre", { type: "mate", in: 3, winner: "black" });
+  blackInput.evalBefore = fakeEval("pv-before", "root-pre", { type: "mate", in: 3, winner: "black" });
+  blackInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "mate", in: 2, winner: "black" });
 
   const white = deriveClassification(whiteInput, CONFIG);
   const black = deriveClassification(blackInput, CONFIG);
@@ -113,14 +112,14 @@ test("mirror: mate preserved → Best for both colors", () => {
   assert.equal(black.quality, "Best");
 });
 
-// Mate lost mirrored: both colors → Blunder
+// Mate lost: both colors → Blunder
 test("mirror: mate lost → Blunder for both colors", () => {
   const whiteInput = buildInput(0, 0, "w");
-  whiteInput.evalAfterBest = fakeEval("pv-best", "root-pre", { type: "mate", in: 3, winner: "white" });
+  whiteInput.evalBefore = fakeEval("pv-before", "root-pre", { type: "mate", in: 3, winner: "white" });
   whiteInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "cp", value: 0 });
 
   const blackInput = buildInput(0, 0, "b");
-  blackInput.evalAfterBest = fakeEval("pv-best", "root-pre", { type: "mate", in: 3, winner: "black" });
+  blackInput.evalBefore = fakeEval("pv-before", "root-pre", { type: "mate", in: 3, winner: "black" });
   blackInput.evalAfterPlayed = fakeEval("pv-played", "root-post", { type: "cp", value: 0 });
 
   const white = deriveClassification(whiteInput, CONFIG);

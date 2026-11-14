@@ -36,11 +36,40 @@ export type Evaluation =
   | { readonly type: "tablebase"; readonly result: "win" | "draw" | "loss" }
   | { readonly type: "unknown" };
 
+/**
+ * Rules-derived terminal evaluation. Distinct from engine-reported mate.
+ * - checkmate: game is over, winner wins immediately (not "mate in N")
+ * - stalemate / draw: game is drawn, no classification rule exists yet
+ *   at Stage 4 (produces partial result + failure downstream).
+ */
+export type TerminalEvaluation =
+  | {
+      readonly type: "terminal";
+      readonly kind: "checkmate";
+      readonly winner: "white" | "black";
+    }
+  | { readonly type: "terminal"; readonly kind: "stalemate" }
+  | { readonly type: "terminal"; readonly kind: "draw" };
+
+/** Any evaluation that can enter classification (engine OR rules-derived). */
+export type AnyEvaluation = Evaluation | TerminalEvaluation;
+
 export interface SourcedEvaluation {
   readonly eval: Evaluation;
   readonly pvId: string;
   readonly rootId: string;
   readonly depth: number;
+}
+
+/**
+ * Rules-derived evaluation (terminal states). No engine search was performed,
+ * so this must NOT pretend to have a PV, root, or depth.
+ * Verification: FEN must match; terminal state re-verified via chess.js.
+ */
+export interface RulesSourcedEvaluation {
+  readonly eval: TerminalEvaluation;
+  readonly fen: string;
+  readonly rulesSource: "chess.js";
 }
 
 /**
@@ -199,8 +228,8 @@ export type GainedReason =
 
 export interface MateTransition {
   readonly before: Evaluation;
-  readonly afterPlayed: Evaluation;
-  readonly afterBest: Evaluation;
+  readonly afterPlayed: AnyEvaluation;
+  readonly expectedAfterBest: AnyEvaluation; // projected to post-move boundary
   readonly moverColor: "w" | "b";
   readonly verdict: MateVerdict; // never null inside
 }
@@ -226,9 +255,17 @@ export interface ClassificationInput {
   readonly moverColor: "w" | "b";
   readonly preMoveFen: string;
   readonly postMoveFen: string;
+  /**
+   * Engine evaluation of the pre-move position. The "best-line value
+   * at the post-move boundary" is derived via expectedAfterBestMove();
+   * it is not a separate input.
+   */
   readonly evalBefore: SourcedEvaluation;
-  readonly evalAfterBest: SourcedEvaluation;
-  readonly evalAfterPlayed: SourcedEvaluation;
+  /**
+   * Engine evaluation of the post-played position, OR a rules-derived
+   * terminal evaluation (checkmate/stalemate/draw).
+   */
+  readonly evalAfterPlayed: SourcedEvaluation | RulesSourcedEvaluation;
   readonly epLoss: number; // 0..1 from mover perspective
   readonly cpLoss: number;
   readonly annotations: readonly Annotation[];
