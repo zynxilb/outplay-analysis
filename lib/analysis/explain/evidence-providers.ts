@@ -26,6 +26,14 @@ export type EvidenceFact =
       readonly matingLine: ReadonlyArray<{ uci: string; san: string }>;
       readonly mateDeliveringMoveSan: string;
       readonly preMoveFen: string;
+      /**
+       * The move actually played instead of the mating line. Required
+       * so the graph-builder can substantiate "the player missed mate"
+       * — not just "a mating line existed".
+       */
+      readonly playedMoveUci: string;
+      /** Evaluation after the played move (terminal or engine). */
+      readonly evalAfterPlayed: AnyEvaluation;
       // Provenance — required for ProofEngine at graph-build time
       readonly pvId: string;
       readonly rootId: string;
@@ -103,9 +111,11 @@ function verifyPlayedMoveConnects(
   if (!result) {
     throw new Error(`Played move "${playedMoveUci}" is illegal from preMoveFen`);
   }
-  // Compare canonical FEN (position + turn + castling + ep; ignore clocks)
-  const expected = postMoveFen.trim().split(/\s+/).slice(0, 4).join(" ");
-  const actual = chess.fen().split(/\s+/).slice(0, 4).join(" ");
+  // Compare canonical 6-field FEN (position, turn, castling, ep,
+  // halfmove clock, fullmove number). Outplay preserves the actual game
+  // state; mismatches in clocks indicate a Stage 4 pipeline bug.
+  const expected = postMoveFen.trim().split(/\s+/).join(" ");
+  const actual = chess.fen();
   if (expected !== actual) {
     throw new Error(
       `Played move "${playedMoveUci}" does not produce postMoveFen. ` +
@@ -201,6 +211,8 @@ export function extractFacts(input: FactInput): EvidenceFact[] {
         matingLine: input.preMovePvMoves,
         mateDeliveringMoveSan: verified.lastSan,
         preMoveFen: input.preMoveFen,
+        playedMoveUci: input.playedMoveUci,
+        evalAfterPlayed: input.evalAfterPlayed,
         pvId: input.preMovePvId,
         rootId: input.preMoveRootId,
         depth: input.preMoveDepth,

@@ -12,7 +12,26 @@ const BACK_RANK_MATE = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";
 const BEFORE_RD8 = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
 // Simple mate-in-1: white Ra8# from Ra1
 const MATE_IN_1_BEFORE = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
-const MATE_IN_1_AFTER = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";
+// Helper: generate canonical FEN by replaying moves via chess.js.
+// Use this instead of hand-writing FENs — chess.js applies strict
+// halfmove/fullmove/ep rules that hand-written FENs frequently get
+// wrong (e.g., ep target only when capture is actually possible,
+// halfmove clock increments on quiet moves).
+import { Chess } from "chess.js";
+function fenAfter(fen: string, moves: string[]): string {
+  const c = new Chess(fen);
+  for (const m of moves) c.move(m);
+  return c.fen();
+}
+
+// Verified from fenAfter(STARTPOS, ...):
+//   fenAfter("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", ["Ra8#"])
+//     = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 1 1"
+//   fenAfter(STARTPOS, ["d4"])
+//     = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+//   fenAfter(STARTPOS, ["Nf3"])
+//     = "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1"
+const MATE_IN_1_AFTER = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 1 1";  // was 0 1, halfmove=1 after Ra8
 // Non-mate position
 const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 // chess.js canonical FEN after e2e4 from startpos. Note: ep target is
@@ -88,6 +107,9 @@ test("fact_missed_mate_fires_only_when_verdict_lost", () => {
     assert.equal(m.pvId, "pv-test-1");
     assert.equal(m.rootId, "root-test-1");
     assert.equal(m.depth, 10);
+    // New fields (per architect review)
+    assert.equal(m.playedMoveUci, "a1a2");
+    assert.ok(m.evalAfterPlayed);
   }
 });
 
@@ -135,6 +157,36 @@ test("fact_missed_mate_not_fired_when_verdict_inconsistent", () => {
     preMoveRootEval: { type: "mate", in: 1, winner: "white" },
     preMovePvMoves: [{ uci: "a1a8", san: "Ra8#" }],
     mateVerdictKind: "inconsistent",
+  }));
+  assert.equal(facts.filter((f) => f.kind === "missed_mate").length, 0);
+});test("fact_missed_mate_not_fired_when_verdict_inconsistent", () => {
+  const facts = extractFacts(makeInput({
+    playedMoveUci: "a1a2",
+    preMoveFen: MATE_IN_1_BEFORE,
+    postMoveFen: "6k1/5ppp/8/8/8/8/R7/6K1 b - - 1 1",
+    preMoveRootEval: { type: "mate", in: 1, winner: "white" },
+    preMovePvMoves: [{ uci: "a1a8", san: "Ra8#" }],
+    mateVerdictKind: "inconsistent",
+  }));
+  assert.equal(facts.filter((f) => f.kind === "missed_mate").length, 0);
+});
+
+test("fact_missed_mate_not_fired_when_pv_does_not_reach_checkmate", () => {
+  // Legitimate PV but does not end in checkmate. SAN valid, distance
+  // plausible, but verifyMateContinuation returns false.
+  const facts = extractFacts(makeInput({
+    playedMoveUci: "a1a2",
+    quality: "Blunder",
+    preMoveFen: MATE_IN_1_BEFORE,
+    postMoveFen: "6k1/5ppp/8/8/8/8/R7/6K1 b - - 1 1",
+    preMoveRootEval: { type: "mate", in: 3, winner: "white" },
+    // Legal shuffling line that never delivers checkmate
+    preMovePvMoves: [
+      { uci: "a1a2", san: "Ra2" },
+      { uci: "g8f8", san: "Kf8" },
+      { uci: "a2a8", san: "Ra8+" },
+    ],
+    mateVerdictKind: "lost",
   }));
   assert.equal(facts.filter((f) => f.kind === "missed_mate").length, 0);
 });
@@ -188,6 +240,20 @@ test("fact_engine_preferred_not_fired_when_quality_not_best", () => {
   assert.equal(facts.filter((f) => f.kind === "engine_preferred").length, 0);
 });
 
+test("fact_engine_preferred_not_fired_when_played_differs_from_pv_head", () => {
+  // Player chose d2d4 but engine PV head is e2e4. Quality may be "Best"
+  // by threshold, but the exact move does not match the engine's choice.
+  // Note: ep target is "-" (no black pawn on c4/e4 can capture en passant).
+  const facts = extractFacts(makeInput({
+    quality: "Best",
+    playedMoveUci: "d2d4",
+    postMoveFen: fenAfter("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", ["d4"]),
+    preMovePvMoves: [{ uci: "e2e4", san: "e4" }],
+    preMovePvStability: "stable",
+  }));
+  assert.equal(facts.filter((f) => f.kind === "engine_preferred").length, 0);
+});
+
 // ─── Played move connection (throws on Stage 4 invariant violation) ──
 
 test("throws_when_played_move_does_not_produce_post_fen", () => {
@@ -216,11 +282,10 @@ test("throws_when_played_move_is_illegal", () => {
 
 test("no_facts_for_ordinary_move", () => {
   // STARTPOS has a knight on g1, so g1f3 (Nf3) IS legal from startpos.
-  // postMoveFen is the canonical chess.js FEN after 1.Nf3.
   const facts = extractFacts(makeInput({
     quality: "Good",
     playedMoveUci: "g1f3",
-    postMoveFen: "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1",
+    postMoveFen: fenAfter("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", ["Nf3"]),
   }));
   assert.equal(facts.length, 0);
 });
