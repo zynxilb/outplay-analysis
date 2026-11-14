@@ -28,7 +28,12 @@ import type {
   ProofMechanical,
   AnyEvaluation,
 } from "../core/types.ts";
-import { ContractViolation, validateEvidenceGraph } from "../core/contracts.ts";
+import {
+  ContractViolation,
+  validateEvidenceGraph,
+  expectedAfterBestMove,
+  computeMateVerdict,
+} from "../core/contracts.ts";
 import { replayPgn } from "../pgn-replay.ts";
 import type { EvidenceFact } from "./evidence-providers.ts";
 
@@ -323,12 +328,6 @@ export function buildEvidenceGraph(
           );
         }
         const mv = move.mateVerdict;
-        if (mv.verdict.kind !== "lost") {
-          throw new ContractViolation(
-            "EvidenceGraph",
-            `MISSED_MATE requires move.mateVerdict.verdict.kind === "lost", got "${mv.verdict.kind}" at ply ${fact.ply}`,
-          );
-        }
         if (mv.before.type !== "mate") {
           throw new ContractViolation(
             "EvidenceGraph",
@@ -356,6 +355,43 @@ export function buildEvidenceGraph(
             `MISSED_MATE mateVerdict.moverColor "${mv.moverColor}" != root.sideToMove "${root.sideToMove}"`,
           );
         }
+        // Cross-validate derived values (architect final blocker):
+        // 1. expectedAfterBest must be the projection of `before`.
+        const expectedProj = expectedAfterBestMove(mv.before, mv.moverColor);
+        if (!evalsEqual(mv.expectedAfterBest, expectedProj)) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE mateVerdict.expectedAfterBest does not match expectedAfterBestMove(before, moverColor). ` +
+              `Expected ${JSON.stringify(expectedProj)}, got ${JSON.stringify(mv.expectedAfterBest)}.`,
+          );
+        }
+        // 2. The recorded verdict must equal computeMateVerdict(afterPlayed,
+        //    expectedAfterBest, moverColor).
+        const recomputedVerdict = computeMateVerdict(
+          mv.afterPlayed,
+          mv.expectedAfterBest,
+          mv.moverColor,
+        );
+        if (recomputedVerdict === null) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE recomputeMateVerdict returned null (no mate on either side)`,
+          );
+        }
+        if (JSON.stringify(mv.verdict) !== JSON.stringify(recomputedVerdict)) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE verdict mismatch: recorded ${JSON.stringify(mv.verdict)}, recomputed ${JSON.stringify(recomputedVerdict)}`,
+          );
+        }
+
+        if (recomputedVerdict.kind !== "lost") {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE requires recomputed verdict.kind === "lost", got "${recomputedVerdict.kind}" at ply ${fact.ply}`,
+          );
+        }
+
         // Bind root FEN to actual game position (Blocker 2B)
         {
           const actualMissedFens = getActualFensAtPly(fact.ply, game, positionsCache);

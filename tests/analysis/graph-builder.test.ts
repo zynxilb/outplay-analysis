@@ -245,14 +245,55 @@ test("graph_missed_mate_verified_when_verdict_lost", () => {
   assert.equal(missed!.proofs.length, 2);
 });
 
+test("graph_missed_mate_rejects_forged_expectedAfterBest", () => {
+  // Build setup with lost verdict, then corrupt expectedAfterBest so it
+  // does not match expectedAfterBestMove(before, moverColor).
+  const { fact, game } = makeMissedMateSetup("lost");
+  // Corrupt: change expectedAfterBest to a cp(0) (not the projection of mate in 1)
+  const move = game.moves[0] as ClassifiedMove;
+  const corrupted: MateTransition = {
+    ...move.mateVerdict!,
+    expectedAfterBest: { type: "cp", value: 0 },
+  };
+  const corruptedMove: ClassifiedMove = { ...move, mateVerdict: corrupted };
+  const corruptedGame = { ...game, moves: [corruptedMove] };
+
+  assert.throws(
+    () => buildEvidenceGraph([fact], corruptedGame),
+    /expectedAfterBest does not match expectedAfterBestMove/,
+  );
+});
+
+test("graph_missed_mate_rejects_forged_verdict", () => {
+  // Setup with lost verdict, then replace verdict with a non-lost kind.
+  // computeMateVerdict(afterPlayed=cp, expectedAfterBest=terminal, mover=white)
+  // yields "lost" — so forging verdict to "preserved" must be rejected.
+  const { fact, game } = makeMissedMateSetup("lost");
+  const move = game.moves[0] as ClassifiedMove;
+  const corrupted: MateTransition = {
+    ...move.mateVerdict!,
+    verdict: { kind: "preserved", distance: 1 },
+  };
+  const corruptedMove: ClassifiedMove = { ...move, mateVerdict: corrupted };
+  const corruptedGame = { ...game, moves: [corruptedMove] };
+
+  assert.throws(
+    () => buildEvidenceGraph([fact], corruptedGame),
+    /verdict mismatch/,
+  );
+});
+
 test("graph_missed_mate_rejects_verdict_preserved", () => {
+  // Recorded verdict says "preserved" but recompute from evaluations says
+  // "lost" — caught by verdict mismatch check, not by an early label check.
   const { fact, game } = makeMissedMateSetup("preserved");
-  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.mateVerdict\.verdict\.kind === "lost"/);
+  assert.throws(() => buildEvidenceGraph([fact], game), /verdict mismatch/);
 });
 
 test("graph_missed_mate_rejects_verdict_delayed", () => {
+  // Same: recorded "delayed" vs recomputed "lost" → verdict mismatch.
   const { fact, game } = makeMissedMateSetup("delayed");
-  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.mateVerdict\.verdict\.kind === "lost"/);
+  assert.throws(() => buildEvidenceGraph([fact], game), /verdict mismatch/);
 });
 
 test("graph_missed_mate_rejects_null_mate_verdict", () => {
