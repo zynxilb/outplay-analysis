@@ -172,15 +172,16 @@ test("fact_missed_mate_not_fired_when_verdict_inconsistent", () => {
 });
 
 test("fact_missed_mate_not_fired_when_pv_does_not_reach_checkmate", () => {
-  // Legitimate PV but does not end in checkmate. SAN valid, distance
-  // plausible, but verifyMateContinuation returns false.
+  // Legal PV that ends in check but NOT checkmate. The mate-distance
+  // check (ceil(3 plies / 2) = 2) passes, so the test reaches the
+  // actual checkmate verification — which fails — and no fact is emitted.
   const facts = extractFacts(makeInput({
     playedMoveUci: "a1a2",
     quality: "Blunder",
     preMoveFen: MATE_IN_1_BEFORE,
     postMoveFen: "6k1/5ppp/8/8/8/8/R7/6K1 b - - 1 1",
-    preMoveRootEval: { type: "mate", in: 3, winner: "white" },
-    // Legal shuffling line that never delivers checkmate
+    preMoveRootEval: { type: "mate", in: 2, winner: "white" },
+    // Legal line, ends with Ra8+ (check, not checkmate)
     preMovePvMoves: [
       { uci: "a1a2", san: "Ra2" },
       { uci: "g8f8", san: "Kf8" },
