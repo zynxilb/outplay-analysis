@@ -122,10 +122,10 @@ export type MechanicalRule =
   | "LEGAL_MOVE"
   | "PIECE_CONSTRAINED"
   | "PIECE_UNDEFENDED"
-  // Stage 5 additions — verifiable from Stage 4 output, no motifs
-  | "TERMINAL_CHECKMATE"
-  | "MATE_CONTINUATION_VERIFIED"
-  | "PLAYED_MATCHES_ENGINE_TOP";
+  // Stage 5 addition — rules-verified only. Engine-derived facts
+  // (MISSED_MATE, ENGINE_PREFERRED) are represented as ProofEngine at
+  // graph-build time, not as MechanicalRule.
+  | "TERMINAL_CHECKMATE";
 
 export interface ProofMechanical {
   readonly kind: "mechanical";

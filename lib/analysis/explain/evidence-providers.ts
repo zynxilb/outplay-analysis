@@ -1,49 +1,15 @@
 // lib/analysis/explain/evidence-providers.ts
 //
-// Stage 5 Day 1: extract evidence facts from Stage 4 output.
+// Stage 5 Day 1 (corrected): extract evidence facts from Stage 4 output.
 //
-// ANSWERS THE ARCHITECT'S QUESTION:
-//   "Which facts can we reliably extract from Stage 4 output without
-//    introducing motif detection or refutation generation?"
+// Facts carry PV/root/depth provenance so Day 2's graph-builder can
+// construct ProofEngine for engine-derived facts (not MechanicalRule).
 //
-// Three facts are extractable and verifiable:
-//
-// 1. MATE_DELIVERED
-//    - Mover's played move ended the game in checkmate.
-//    - Source: evalAfterPlayed is { type: "terminal", kind: "checkmate" }
-//      AND winner === moverColor.
-//    - Verified via chess.js: the post-move FEN is actually checkmate.
-//    - Rule: TERMINAL_CHECKMATE
-//
-// 2. MISSED_MATE
-//    - The pre-move position had a forced mate (mateVerdict.kind === "lost"),
-//      and the engine's PV from that position actually reaches checkmate
-//      when replayed.
-//    - Verified via chess.js: full replay of the pre-move PV from preMoveFen
-//      ends in isCheckmate().
-//    - Rule: MATE_CONTINUATION_VERIFIED
-//
-// 3. ENGINE_PREFERRED
-//    - The played move exactly matches the engine's top move in a stable
-//      search, and the classification is "Best".
-//    - Verified via: preMovePv.stability === "stable" AND
-//      playedMoveUci === preMovePv.moves[0].uci AND quality === "Best".
-//    - Rule: PLAYED_MATCHES_ENGINE_TOP
-//    - NOTE: This is a FACTUAL confirmation, not a semantic claim about
-//      the move's quality. The engine may have missed something deeper.
-//
-// Everything else → no fact extracted. Downstream planner will be silent.
+// MISSED_MATE requires mateVerdictKind === "lost" — preserved, delayed,
+// gained, inconsistent are NOT missed_mate.
 
 import { Chess } from "chess.js";
-import type {
-  AnyEvaluation,
-  Evaluation,
-  QualityLevel,
-} from "../core/types.ts";
-
-// ═══════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════
+import type { AnyEvaluation, Evaluation, QualityLevel } from "../core/types.ts";
 
 export type EvidenceFact =
   | {
@@ -51,25 +17,29 @@ export type EvidenceFact =
       readonly ply: number;
       readonly winner: "white" | "black";
       readonly terminalFen: string;
-      /** Opponent king's square (where the checkmate is delivered). */
       readonly checkmateSquare: string;
     }
   | {
       readonly kind: "missed_mate";
       readonly ply: number;
-      /** Number of moves in the mating line (mate in N). */
       readonly mateIn: number;
-      /** Verified PV that reaches checkmate. */
       readonly matingLine: ReadonlyArray<{ uci: string; san: string }>;
-      /** Last move of matingLine — the actual mating move. */
       readonly mateDeliveringMoveSan: string;
       readonly preMoveFen: string;
+      // Provenance — required for ProofEngine at graph-build time
+      readonly pvId: string;
+      readonly rootId: string;
+      readonly depth: number;
     }
   | {
       readonly kind: "engine_preferred";
       readonly ply: number;
       readonly playedMoveUci: string;
       readonly engineMoveUci: string;
+      // Provenance
+      readonly pvId: string;
+      readonly rootId: string;
+      readonly depth: number;
     };
 
 export interface FactInput {
@@ -85,26 +55,21 @@ export interface FactInput {
   readonly preMovePvStability: "stable" | "unstable";
   readonly mateVerdictKind:
     | "preserved" | "delayed" | "lost" | "gained" | "inconsistent" | null;
+  // Provenance fields (Stage 5 Day 1 correction)
+  readonly preMovePvId: string;
+  readonly preMoveRootId: string;
+  readonly preMoveDepth: number;
 }
-
-// ═══════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════
 
 function findKingSquare(fen: string, color: "w" | "b"): string | null {
   try {
     const chess = new Chess(fen);
-    const board = chess.board();
-    for (const row of board) {
+    for (const row of chess.board()) {
       for (const cell of row) {
-        if (cell && cell.type === "k" && cell.color === color) {
-          return cell.square;
-        }
+        if (cell && cell.type === "k" && cell.color === color) return cell.square;
       }
     }
-  } catch {
-    return null;
-  }
+  } catch { return null; }
   return null;
 }
 
@@ -114,45 +79,87 @@ function movesMatchMover(winner: "white" | "black", moverColor: "w" | "b"): bool
 }
 
 /**
- * Replay a PV from a starting FEN. Return true if all moves are legal
- * AND the final position is checkmate.
+ * Verify the played move connects preMoveFen → postMoveFen.
+ * Throws on mismatch — this is a Stage 4 pipeline invariant violation.
+ * Callers must not use fact extraction results if positions do not connect.
+ */
+function verifyPlayedMoveConnects(
+  preMoveFen: string,
+  playedMoveUci: string,
+  postMoveFen: string,
+): void {
+  const chess = new Chess(preMoveFen);
+  const from = playedMoveUci.slice(0, 2);
+  const to = playedMoveUci.slice(2, 4);
+  const promotion = playedMoveUci.length > 4 ? playedMoveUci[4] : undefined;
+  let result;
+  try {
+    result = chess.move({ from, to, promotion });
+  } catch (e) {
+    throw new Error(
+      `Played move "${playedMoveUci}" is illegal from preMoveFen: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (!result) {
+    throw new Error(`Played move "${playedMoveUci}" is illegal from preMoveFen`);
+  }
+  // Compare canonical FEN (position + turn + castling + ep; ignore clocks)
+  const expected = postMoveFen.trim().split(/\s+/).slice(0, 4).join(" ");
+  const actual = chess.fen().split(/\s+/).slice(0, 4).join(" ");
+  if (expected !== actual) {
+    throw new Error(
+      `Played move "${playedMoveUci}" does not produce postMoveFen. ` +
+      `Expected "${expected}", got "${actual}".`,
+    );
+  }
+}
+
+/**
+ * Verify a PV reaches checkmate. Returns the mate distance (mover's moves)
+ * plus the final SAN, or null if verification fails.
+ *
+ * Verifies:
+ * 1. Every UCI is legal.
+ * 2. Every replayed SAN matches the supplied SAN.
+ * 3. The final position is checkmate.
+ * Returns actual mate-in-N computed from line length.
  */
 function verifyMateContinuation(
   startFen: string,
   moves: ReadonlyArray<{ uci: string; san: string }>,
-): boolean {
-  if (moves.length === 0) return false;
+): { actualMateIn: number; lastSan: string } | null {
+  if (moves.length === 0) return null;
   const chess = new Chess(startFen);
-  for (const m of moves) {
+  for (let i = 0; i < moves.length; i++) {
+    const m = moves[i];
+    const from = m.uci.slice(0, 2);
+    const to = m.uci.slice(2, 4);
+    const promotion = m.uci.length > 4 ? m.uci[4] : undefined;
+    let result;
     try {
-      const from = m.uci.slice(0, 2);
-      const to = m.uci.slice(2, 4);
-      const promotion = m.uci.length > 4 ? m.uci[4] : undefined;
-      const result = chess.move({ from, to, promotion });
-      if (!result) return false;
-    } catch {
-      return false;
-    }
+      result = chess.move({ from, to, promotion });
+    } catch { return null; }
+    if (!result) return null;
+    if (result.san !== m.san) return null;
   }
-  return chess.isCheckmate();
+  if (!chess.isCheckmate()) return null;
+  const actualMateIn = Math.ceil(moves.length / 2);
+  return { actualMateIn, lastSan: moves[moves.length - 1].san };
 }
 
-// ═══════════════════════════════════════════════════════════
-// Main extractor
-// ═══════════════════════════════════════════════════════════
-
 export function extractFacts(input: FactInput): EvidenceFact[] {
+  // Invariant: played move must connect preMoveFen → postMoveFen.
+  // Throws if Stage 4 supplied inconsistent data.
+  verifyPlayedMoveConnects(input.preMoveFen, input.playedMoveUci, input.postMoveFen);
+
   const facts: EvidenceFact[] = [];
 
-  // ── 1. MATE_DELIVERED ─────────────────────────────────
+  // ── 1. MATE_DELIVERED ──
   if (
     input.evalAfterPlayed.type === "terminal" &&
     input.evalAfterPlayed.kind === "checkmate" &&
     movesMatchMover(input.evalAfterPlayed.winner, input.moverColor)
   ) {
-    // Re-verify with chess.js (defense in depth — pipeline already
-    // validated this via validateRulesSourcedEvaluation, but we don't
-    // want to trust that blindly here).
     const chess = new Chess(input.postMoveFen);
     if (chess.isCheckmate()) {
       const oppColor = input.moverColor === "w" ? "b" : "w";
@@ -169,34 +176,39 @@ export function extractFacts(input: FactInput): EvidenceFact[] {
     }
   }
 
-  // ── 2. MISSED_MATE ────────────────────────────────────
-  // Only if mate was actually LOST (mateVerdict.kind === "lost") OR
-  // pre-move eval was mate but played move didn't deliver checkmate.
-  const wasMateAvailable = input.preMoveRootEval.type === "mate"
-    && movesMatchMover(input.preMoveRootEval.winner, input.moverColor);
+  // ── 2. MISSED_MATE — requires mateVerdictKind === "lost" ──
+  const wasMateAvailable =
+    input.preMoveRootEval.type === "mate" &&
+    movesMatchMover(input.preMoveRootEval.winner, input.moverColor);
   const playedDeliveredMate =
     input.evalAfterPlayed.type === "terminal" &&
     input.evalAfterPlayed.kind === "checkmate" &&
     movesMatchMover(input.evalAfterPlayed.winner, input.moverColor);
 
-  if (wasMateAvailable && !playedDeliveredMate && input.preMovePvMoves.length > 0) {
-    // Verify the PV actually reaches checkmate
-    if (verifyMateContinuation(input.preMoveFen, input.preMovePvMoves)) {
-      const lastMove = input.preMovePvMoves[input.preMovePvMoves.length - 1];
+  if (
+    wasMateAvailable &&
+    !playedDeliveredMate &&
+    input.mateVerdictKind === "lost" &&
+    input.preMovePvMoves.length > 0
+  ) {
+    const verified = verifyMateContinuation(input.preMoveFen, input.preMovePvMoves);
+    // Also verify the reported mate distance matches the verified line.
+    if (verified && verified.actualMateIn === input.preMoveRootEval.in) {
       facts.push({
         kind: "missed_mate",
         ply: input.ply,
         mateIn: input.preMoveRootEval.in,
         matingLine: input.preMovePvMoves,
-        mateDeliveringMoveSan: lastMove.san,
+        mateDeliveringMoveSan: verified.lastSan,
         preMoveFen: input.preMoveFen,
+        pvId: input.preMovePvId,
+        rootId: input.preMoveRootId,
+        depth: input.preMoveDepth,
       });
     }
   }
 
-  // ── 3. ENGINE_PREFERRED ───────────────────────────────
-  // Factual confirmation: played move matches engine's top move
-  // in a stable search, and quality is "Best".
+  // ── 3. ENGINE_PREFERRED ──
   if (
     input.quality === "Best" &&
     input.preMovePvStability === "stable" &&
@@ -208,12 +220,11 @@ export function extractFacts(input: FactInput): EvidenceFact[] {
       ply: input.ply,
       playedMoveUci: input.playedMoveUci,
       engineMoveUci: input.preMovePvMoves[0].uci,
+      pvId: input.preMovePvId,
+      rootId: input.preMoveRootId,
+      depth: input.preMoveDepth,
     });
   }
-
-  // ── NO_FACT → downstream will be silent ───────────────
-  // If facts is empty, the planner must return `silent`. That is the
-  // honest response: we have no verified cause for this move.
 
   return facts;
 }

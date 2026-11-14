@@ -167,10 +167,8 @@ const ALL_MECHANICAL_RULES: readonly MechanicalRule[] = [
   "LEGAL_MOVE",
   "PIECE_CONSTRAINED",
   "PIECE_UNDEFENDED",
-  // Stage 5 additions
+  // Stage 5 addition — rules-verified only
   "TERMINAL_CHECKMATE",
-  "MATE_CONTINUATION_VERIFIED",
-  "PLAYED_MATCHES_ENGINE_TOP",
 ];
 
 const QUALITY_RANK: Record<QualityLevel, number> = {
