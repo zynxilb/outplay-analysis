@@ -32,7 +32,16 @@ const BENCH_CONFIG: AnalysisConfig = {
     missExpectedGainThreshold: 0.10,
     mateDistanceTiers: { excellent: 1, good: 3, inaccuracy: 6, mistake: 10 },
   },
-  motifs: { enabled: ["fork"], precisionTargets: { fork: 0.95 } },
+  motifs: {
+    enabled: ["fork", "pin", "skewer", "discovered", "removing_defender"],
+    precisionTargets: {
+      fork: 0.95,
+      pin: 0.90,
+      skewer: 0.90,
+      discovered: 0.90,
+      removing_defender: 0.85,
+    },
+  },
   explanation: { secondaryContributionRatio: 0.25 },
 };
 
