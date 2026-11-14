@@ -18,9 +18,12 @@ import type {
 } from "../../lib/analysis/core/types.ts";
 import type { EngineLayer } from "../../lib/analysis/core/contracts.ts";
 import { Chess } from "chess.js";
+import { computeConfigHash } from "../../lib/analysis/core/contracts.ts";
 import { FIXTURE_CONFIG } from "../fixtures/classification-golden.ts";
 
 const CONFIG = FIXTURE_CONFIG as unknown as AnalysisConfig;
+const FIXTURE_ENGINE_IDENTITY = CONFIG.engine.identity;
+const FIXTURE_CONFIG_HASH = computeConfigHash(CONFIG.engine);
 
 const OPERA_PGN = `[Event "Paris Opera"]
 [White "Morphy"]
@@ -96,8 +99,8 @@ class MockEngine implements EngineLayer {
       fen,
       sideToMove: mover,
       purpose,
-      engineIdentity: "mock-engine",
-      configHash: "mock-hash",
+      engineIdentity: FIXTURE_ENGINE_IDENTITY,
+      configHash: FIXTURE_CONFIG_HASH,
       evaluationPerspective: "white",
       searchBudget: budget,
     };
@@ -206,4 +209,96 @@ test("analyze_game_mock_budget_override", async () => {
     assert.equal(root.searchBudget.kind, "depth");
     assert.equal(root.searchBudget.value, 5);
   }
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 4 blockers — fatal pre-move / cancellation / provenance
+// ═══════════════════════════════════════════════════════════
+
+class AbortableMockEngine implements EngineLayer {
+  private searchCount = 0;
+  private readonly fatalAt: number | null;
+  private readonly abortAt: number | null;
+  private readonly corruptedFenAt: number | null;
+
+  constructor(opts: { fatalAt?: number; abortAt?: number; corruptedFenAt?: number } = {}) {
+    this.fatalAt = opts.fatalAt ?? null;
+    this.abortAt = opts.abortAt ?? null;
+    this.corruptedFenAt = opts.corruptedFenAt ?? null;
+  }
+
+  async initialize(): Promise<void> {}
+  async abort(): Promise<void> {}
+  async dispose(): Promise<void> {}
+
+  async search(fen: string, purpose: AnalysisPurpose, budget: SearchBudget): Promise<{ root: AnalysisRoot; pv: PVRecord }> {
+    const idx = this.searchCount++;
+    if (this.fatalAt === idx) throw new Error("Stockfish: worker disposed unexpectedly");
+    if (this.abortAt === idx) {
+      const e = new Error("Search aborted"); e.name = "AbortError"; throw e;
+    }
+    const rootFen = this.corruptedFenAt === idx
+      ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" // fixed FEN, may not match searched
+      : fen;
+    const root: AnalysisRoot = {
+      id: `abort-root-${idx}`, fen: rootFen, sideToMove: fen.includes(" w ") ? "w" : "b",
+      purpose, engineIdentity: FIXTURE_ENGINE_IDENTITY, configHash: FIXTURE_CONFIG_HASH,
+      evaluationPerspective: "white", searchBudget: budget,
+    };
+    const pv: PVRecord = {
+      id: `abort-pv-${idx}`, rootId: root.id,
+      rootEval: { type: "cp", value: 20 }, depth: 10, stability: "stable",
+      moves: [{ uci: "e2e4", san: "e4", evalAfter: { type: "unknown" } }],
+      createdAt: Date.now(),
+    };
+    return { root, pv };
+  }
+}
+
+test("blocker_fatal_pre_move_search_stops_analysis", async () => {
+  const engine = new AbortableMockEngine({ fatalAt: 0 }); // first search fails fatally
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+  assert.equal(result.status, "partial");
+  assert.equal(result.moves.length, 0);
+  assert.ok(result.failures.some((f) => /Fatal engine failure/i.test(f.reason)));
+});
+
+test("blocker_abort_pre_move_stops_analysis", async () => {
+  const engine = new AbortableMockEngine({ abortAt: 0 });
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+  assert.equal(result.status, "partial");
+  assert.equal(result.moves.length, 0);
+  assert.ok(result.failures.some((f) => /cancelled/i.test(f.reason)));
+});
+
+test("blocker_abort_post_move_stops_analysis", async () => {
+  const engine = new AbortableMockEngine({ abortAt: 1 }); // abort at first post-search
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+  assert.equal(result.status, "partial");
+  // Pre-move search (idx 0) succeeded, post-move (idx 1) aborted → no classified moves
+  assert.equal(result.moves.length, 0);
+  assert.ok(result.failures.some((f) => /cancelled/i.test(f.reason)));
+});
+
+test("blocker_provenance_root_fen_mismatch_rejected", async () => {
+  // corruptedFenAt=1: first post-move search (after e4). The searched FEN
+  // is different from startpos, so the corrupted root (startpos FEN)
+  // triggers the root.fen !== searched fen check in runSearch.
+  // (corruptedFenAt=0 would be the pre-move search of startpos, which
+  //  happens to have the same FEN as the corrupted override — no mismatch.)
+  const engine = new AbortableMockEngine({ corruptedFenAt: 1 });
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+  assert.equal(result.status, "partial");
+  assert.ok(result.failures.some((f) => /root\.fen/i.test(f.reason)));
+});
+
+test("blocker_signal_aborted_before_start", async () => {
+  const engine = new AbortableMockEngine();
+  const ac = new AbortController();
+  ac.abort();
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine, signal: ac.signal });
+  assert.equal(result.status, "partial");
+  assert.equal(result.moves.length, 0);
+  assert.ok(result.failures.some((f) => /cancelled before start/i.test(f.reason)));
 });
