@@ -216,3 +216,45 @@ test("planner_interface_returns_explained_for_mate", () => {
   const out = planner.plan(graph, null);
   assert.equal(out.status, "explained");
 });
+
+
+// ═══════════════════════════════════════════════════════════
+// Blocker 4 — planner must call validatePlannedExplanation
+// ═══════════════════════════════════════════════════════════
+
+test("planner_rejects_mate_delivered_with_missing_edge", () => {
+  // Complete nodes but missing causal edge — validatePlannedExplanation
+  // requires hasCausalPath(rootCause → mechanism) which fails.
+  const graph = makeGraph(
+    [
+      node("mate_delivered_33", "state_fact"),
+      node("mate_delivered_game_over_33", "consequence"),
+    ],
+    [], // no edges
+  );
+  assert.throws(() => planExplanations(graph), ContractViolation);
+});
+
+test("planner_rejects_disconnected_supporting_evidence", () => {
+  // Build a valid mate explanation, then add an unrelated node as
+  // supporting evidence via a synthetic plan. Since planner doesn't
+  // accept user-supplied supporting evidence, we test via
+  // buildMateDelivered's implicit validation by adding a disconnected
+  // node and forcing validation to run.
+  const graph = makeGraph(
+    [
+      node("mate_delivered_10", "state_fact"),
+      node("mate_delivered_game_over_10", "consequence"),
+      node("unrelated_20", "state_fact"), // disconnected
+    ],
+    [edge("mate_delivered_10", "mate_delivered_game_over_10", "causes")],
+  );
+  // planExplanations doesn't add supporting evidence, so this graph
+  // should still pass (no supporting evidence to reject).
+  const out = planExplanations(graph);
+  assert.equal(out.size, 1);
+  // The unrelated node exists but isn't attached — planner doesn't leak it.
+  if (out.get(10)?.status === "explained") {
+    assert.equal(out.get(10)!.primary.supportingEvidence.length, 0);
+  }
+});

@@ -24,7 +24,7 @@ import type {
   MotifAttributed,
   PlannedExplanation,
 } from "../core/types.ts";
-import { ContractViolation } from "../core/contracts.ts";
+import { ContractViolation, validatePlannedExplanation } from "../core/contracts.ts";
 import type { ExplanationPlanner } from "../core/contracts.ts";
 
 // ─── Node ID parsing ────────────────────────────────────
@@ -115,18 +115,18 @@ export function planExplanations(
     // Priority: MATE_DELIVERED > MISSED_MATE > ENGINE_PREFERRED.
     // In practice MATE_DELIVERED and MISSED_MATE are mutually exclusive
     // at the same ply (one says you delivered, other says you missed).
+    let primary: PlannedExplanation | null = null;
     if (hasMateDelivered) {
-      result.set(ply, {
-        status: "explained",
-        primary: buildMateDelivered(graph, ply),
-        secondary: [],
-      });
+      primary = buildMateDelivered(graph, ply);
     } else if (hasMissedMate) {
-      result.set(ply, {
-        status: "explained",
-        primary: buildMissedMate(graph, ply),
-        secondary: [],
-      });
+      primary = buildMissedMate(graph, ply);
+    }
+    if (primary) {
+      // Blocker 4: validate before returning. Throws ContractViolation if
+      // the plan has missing nodes, disconnected causal chain, or
+      // disconnected supporting evidence.
+      validatePlannedExplanation(primary, graph);
+      result.set(ply, { status: "explained", primary, secondary: [] });
     }
     // ENGINE_PREFERRED-only plies: no entry (positive fact, not a cause).
   }

@@ -28,6 +28,7 @@ import type {
   ProofMechanical,
 } from "../core/types.ts";
 import { ContractViolation, validateEvidenceGraph } from "../core/contracts.ts";
+import { replayPgn } from "../pgn-replay.ts";
 import type { EvidenceFact } from "./evidence-providers.ts";
 
 // ─── Node ID helpers ────────────────────────────────────
@@ -111,6 +112,48 @@ function proofFromPv(pv: PVRecord): ProofEngine {
   };
 }
 
+// ─── Game-binding helpers ────────────────────────────────
+
+function getPositionsCached(
+  game: AnalyzedGame,
+  cache: { value: ReturnType<typeof replayPgn>["positions"] | null },
+): ReturnType<typeof replayPgn>["positions"] {
+  if (cache.value) return cache.value;
+  if (!game.pgn) {
+    throw new ContractViolation(
+      "EvidenceGraph",
+      "game.pgn is empty — cannot verify evidence against the actual game",
+    );
+  }
+  try {
+    cache.value = replayPgn(game.pgn).positions;
+  } catch (e) {
+    throw new ContractViolation(
+      "EvidenceGraph",
+      `PGN replay failed during evidence verification: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  return cache.value;
+}
+
+function getActualFensAtPly(
+  ply: number,
+  game: AnalyzedGame,
+  cache: { value: ReturnType<typeof replayPgn>["positions"] | null },
+): { pre: string; post: string } {
+  const positions = getPositionsCached(game, cache);
+  if (ply < 1 || ply >= positions.length) {
+    throw new ContractViolation(
+      "EvidenceGraph",
+      `ply ${ply} out of range [1, ${positions.length - 1}] for game replay`,
+    );
+  }
+  return {
+    pre: positions[ply - 1].fen,
+    post: positions[ply].fen,
+  };
+}
+
 // ─── Main builder ───────────────────────────────────────
 
 export function buildEvidenceGraph(
@@ -121,10 +164,21 @@ export function buildEvidenceGraph(
   const edges: CausalEdge[] = [];
   let edgeCounter = 0;
   const nextEdgeId = () => `edge-${++edgeCounter}`;
+  const positionsCache: { value: ReturnType<typeof replayPgn>["positions"] | null } = { value: null };
 
   for (const fact of facts) {
     switch (fact.kind) {
       case "terminal_checkmate_delivered": {
+        // 1. Verify terminalFen equals actual post-move FEN at fact.ply
+        const actual = getActualFensAtPly(fact.ply, game, positionsCache);
+        if (actual.post !== fact.terminalFen) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MATE_DELIVERED terminalFen does not match actual game position at ply ${fact.ply}. ` +
+              `Expected "${actual.post}", got "${fact.terminalFen}".`,
+          );
+        }
+        // 2. Verify the position is checkmate
         const chess = new Chess(fact.terminalFen);
         if (!chess.isCheckmate()) {
           throw new ContractViolation(
@@ -132,11 +186,33 @@ export function buildEvidenceGraph(
             `MATE_DELIVERED terminalFen is not checkmate: ${fact.terminalFen}`,
           );
         }
+        // 3. Verify winner from side-to-move (mated side is stm)
+        const stm = chess.turn();
+        const expectedWinner = stm === "w" ? "black" : "white";
+        if (expectedWinner !== fact.winner) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MATE_DELIVERED winner mismatch: FEN side-to-move ${stm} means ${expectedWinner} wins, fact says ${fact.winner}`,
+          );
+        }
+        // 4. Verify checkmateSquare contains opponent king
         const oppPiece = fact.winner === "white" ? "k" : "K";
         if (pieceAt(fact.terminalFen, fact.checkmateSquare) !== oppPiece) {
           throw new ContractViolation(
             "EvidenceGraph",
             `MATE_DELIVERED checkmateSquare "${fact.checkmateSquare}" does not contain ${oppPiece}`,
+          );
+        }
+        // 5. Verify the classified move at ply is terminal checkmate for winner
+        const mateMove = getMoveOrThrow(fact.ply, game);
+        if (
+          mateMove.evaluation.type !== "terminal" ||
+          mateMove.evaluation.kind !== "checkmate" ||
+          mateMove.evaluation.winner !== fact.winner
+        ) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MATE_DELIVERED classified move at ply ${fact.ply} is not a terminal checkmate for ${fact.winner}`,
           );
         }
         const mech: ProofMechanical = {
@@ -234,6 +310,25 @@ export function buildEvidenceGraph(
             `classified move evaluation != fact.evalAfterPlayed`,
           );
         }
+        // Blocker 2: verify the mate transition actually says "lost"
+        if (!move.mateVerdict) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE requires move.mateVerdict, but it is null at ply ${fact.ply}`,
+          );
+        }
+        if (move.mateVerdict.verdict.kind !== "lost") {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE requires move.mateVerdict.verdict.kind === "lost", got "${move.mateVerdict.verdict.kind}" at ply ${fact.ply}`,
+          );
+        }
+        if (move.mateVerdict.before.type !== "mate") {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `MISSED_MATE requires mateVerdict.before to be a mate evaluation, got "${move.mateVerdict.before.type}"`,
+          );
+        }
 
         const availId = nodeId("missed_mate", fact.ply, "available");
         const pvId = nodeId("missed_mate", fact.ply, "pv");
@@ -273,7 +368,7 @@ export function buildEvidenceGraph(
           confidence: "verified",
           positionRef: fact.preMoveFen,
           moveRef: fact.playedMoveUci,
-          proofs: [legalProof],
+          proofs: [legalProof, engProof],
         });
         edges.push({
           id: nextEdgeId(),
@@ -317,12 +412,42 @@ export function buildEvidenceGraph(
             `PV head UCI "${pv.moves[0].uci}" != fact.engineMoveUci "${fact.engineMoveUci}"`,
           );
         }
+        // Blocker 3: verify playedMoveUci === engineMoveUci
+        if (fact.playedMoveUci !== fact.engineMoveUci) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `ENGINE_PREFERRED playedMoveUci "${fact.playedMoveUci}" must equal engineMoveUci "${fact.engineMoveUci}"`,
+          );
+        }
+        // Blocker 3: verify PV stability
+        if (pv.stability !== "stable") {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `ENGINE_PREFERRED requires stable PV, got "${pv.stability}"`,
+          );
+        }
+        // Blocker 3: verify move quality is Best
         const move = getMoveOrThrow(fact.ply, game);
+        if (move.quality !== "Best") {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `ENGINE_PREFERRED requires move.quality === "Best", got "${move.quality}"`,
+          );
+        }
+        // Blocker 3: verify classified SAN → UCI matches played
         const actualUci = sanToUci(root.fen, move.san);
         if (actualUci !== fact.playedMoveUci) {
           throw new ContractViolation(
             "EvidenceGraph",
             `classified move SAN "${move.san}" → UCI "${actualUci}" != fact playedMoveUci "${fact.playedMoveUci}"`,
+          );
+        }
+        // Blocker 3: verify root.fen matches actual pre-move FEN at ply
+        const actualFens = getActualFensAtPly(fact.ply, game, positionsCache);
+        if (root.fen !== actualFens.pre) {
+          throw new ContractViolation(
+            "EvidenceGraph",
+            `ENGINE_PREFERRED root.fen "${root.fen}" does not match actual game position at ply ${fact.ply} "${actualFens.pre}"`,
           );
         }
 
@@ -348,12 +473,20 @@ export function buildEvidenceGraph(
     }
   }
 
-  const firstNode = nodes.values().next().value as EvidenceNode | undefined;
+  // Use actual game root, not the first evidence node (which may be terminal)
+  let rootPositionFen = "";
+  try {
+    const positions = getPositionsCached(game, positionsCache);
+    rootPositionFen = positions[0]?.fen ?? "";
+  } catch {
+    rootPositionFen = "";
+  }
+
   const graph: EvidenceGraph = {
     nodes,
     causalEdges: edges,
     metadata: { duplicates: [], sharedRoots: [] },
-    rootPositionFen: firstNode?.positionRef ?? "",
+    rootPositionFen,
     analysisComplete: game.status === "complete",
   };
 

@@ -700,6 +700,22 @@ export function validateEvidenceGraph(
       throw new ContractViolation("EvidenceGraph", `edge.to "${edge.to}" missing`);
     if (edge.type !== "enables" && edge.type !== "causes")
       throw new ContractViolation("EvidenceGraph", `invalid edge type "${edge.type}"`);
+    // Validate edge.proof (was previously bypassed)
+    switch (edge.proof.kind) {
+      case "mechanical":
+        validateProofMechanical(edge.proof);
+        break;
+      case "engine":
+        validateProofEngine(edge.proof, ctx.pvs);
+        break;
+      case "consequence":
+        validateProofConsequence(edge.proof, ctx.pvs);
+        break;
+      default: {
+        const _e: never = edge.proof;
+        throw new ContractViolation("EvidenceGraph", `unknown edge proof kind: ${JSON.stringify(_e)}`);
+      }
+    }
   }
 
   // Acyclicity

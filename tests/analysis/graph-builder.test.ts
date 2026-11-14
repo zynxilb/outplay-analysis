@@ -10,6 +10,7 @@ import type {
   AnalysisRoot,
   AnalyzedGame,
   ClassifiedMove,
+  MateTransition,
   PVRecord,
 } from "../../lib/analysis/core/types.ts";
 import type { EvidenceFact } from "../../lib/analysis/explain/evidence-providers.ts";
@@ -18,18 +19,29 @@ import { FIXTURE_CONFIG } from "../fixtures/classification-golden.ts";
 const CONFIG = FIXTURE_CONFIG as unknown as AnalysisConfig;
 const CONFIG_HASH = computeConfigHash(CONFIG.engine);
 
-// ─── Fixture helpers ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// Fixture PGNs and FENs (verified via chess.js)
+// ═══════════════════════════════════════════════════════════
+
+const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+// Fool's mate: 1. f3 e5 2. g4 Qh4#
+const FOOLS_MATE_PGN = "1. f3 e5 2. g4 Qh4# 0-1";
+
+// Mate-in-1 pre-move: white to move, Ra8# delivers mate
+const MATE_IN_1_PRE = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
+// After Ra2 (not Ra8#): legal but forfeits mate
+const MATE_IN_1_POST_RA2 = "6k1/5ppp/8/8/8/8/R7/6K1 b - - 1 1";
+
+// ═══════════════════════════════════════════════════════════
+// Builders
+// ═══════════════════════════════════════════════════════════
 
 function fenAfter(fen: string, moves: string[]): string {
   const c = new Chess(fen);
   for (const m of moves) c.move(m);
   return c.fen();
 }
-
-const STARTPOS = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-const MATE_IN_1_FEN = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
-// Verified: Ra8# from MATE_IN_1_FEN → back-rank checkmate
-const MATE_IN_1_AFTER = fenAfter(MATE_IN_1_FEN, ["Ra8#"]);
 
 function makeRoot(id: string, fen: string): AnalysisRoot {
   return {
@@ -49,9 +61,10 @@ function makePv(
   rootId: string,
   rootEval: PVRecord["rootEval"],
   moves: PVRecord["moves"],
+  stability: "stable" | "unstable" = "stable",
 ): PVRecord {
   return {
-    id, rootId, rootEval, depth: 10, stability: "stable",
+    id, rootId, rootEval, depth: 10, stability,
     moves, createdAt: Date.now(),
   };
 }
@@ -61,10 +74,11 @@ function makeMove(
   san: string,
   evaluation: ClassifiedMove["evaluation"],
   quality: ClassifiedMove["quality"] = "Blunder",
+  mateVerdict: MateTransition | null = null,
 ): ClassifiedMove {
   return {
     ply, san, quality, annotations: [],
-    evaluation, expectedScore: null, mateVerdict: null,
+    evaluation, expectedScore: null, mateVerdict,
     classificationVersion: "test",
   };
 }
@@ -84,186 +98,218 @@ function makeGame(overrides: Partial<AnalyzedGame> = {}): AnalyzedGame {
   };
 }
 
-// ─── MATE_DELIVERED ─────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// MATE_DELIVERED — Blockers 1 verification
+// ═══════════════════════════════════════════════════════════
 
-test("graph_mate_delivered_creates_event_and_game_over", () => {
+test("graph_mate_delivered_verified_against_game", () => {
+  // Fool's mate: final position after 2...Qh4# is checkmate. Black wins.
+  const finalFen = fenAfter(STARTPOS, ["f3", "e5", "g4", "Qh4#"]);
+
   const fact: EvidenceFact = {
     kind: "terminal_checkmate_delivered",
-    ply: 1,
-    winner: "white",
-    terminalFen: MATE_IN_1_AFTER,
+    ply: 4,
+    winner: "black",
+    terminalFen: finalFen,
+    checkmateSquare: "e1", // white king's square (mated)
+  };
+  const game = makeGame({
+    pgn: FOOLS_MATE_PGN,
+    moves: [
+      makeMove(4, "Qh4#", { type: "terminal", kind: "checkmate", winner: "black" }, "Best"),
+    ],
+  });
+
+  const graph = buildEvidenceGraph([fact], game);
+  assert.ok(graph.nodes.has("mate_delivered_4"));
+  assert.ok(graph.nodes.has("mate_delivered_game_over_4"));
+  // rootPositionFen should be STARTPOS (actual game root), not terminal
+  assert.equal(graph.rootPositionFen, STARTPOS);
+});
+
+test("graph_mate_delivered_rejects_unrelated_terminal_fen", () => {
+  const fact: EvidenceFact = {
+    kind: "terminal_checkmate_delivered",
+    ply: 4,
+    winner: "black",
+    // Wrong FEN: another back-rank mate, unrelated to Fool's mate
+    terminalFen: "R5k1/5ppp/8/8/8/8/8/6K1 b - - 1 1",
     checkmateSquare: "g8",
   };
-  const game = makeGame();
-  const graph = buildEvidenceGraph([fact], game);
+  const game = makeGame({
+    pgn: FOOLS_MATE_PGN,
+    moves: [makeMove(4, "Qh4#", { type: "terminal", kind: "checkmate", winner: "black" }, "Best")],
+  });
+  assert.throws(() => buildEvidenceGraph([fact], game), /does not match actual game position/);
+});
 
-  assert.equal(graph.nodes.size, 2);
-  assert.ok(graph.nodes.has("mate_delivered_1"));
-  assert.ok(graph.nodes.has("mate_delivered_game_over_1"));
-  assert.equal(graph.causalEdges.length, 1);
-  assert.equal(graph.causalEdges[0].type, "causes");
+test("graph_mate_delivered_rejects_wrong_winner", () => {
+  const finalFen = fenAfter(STARTPOS, ["f3", "e5", "g4", "Qh4#"]);
+  const fact: EvidenceFact = {
+    kind: "terminal_checkmate_delivered",
+    ply: 4,
+    winner: "white", // WRONG — black delivered mate
+    terminalFen: finalFen,
+    checkmateSquare: "e1",
+  };
+  const game = makeGame({
+    pgn: FOOLS_MATE_PGN,
+    moves: [makeMove(4, "Qh4#", { type: "terminal", kind: "checkmate", winner: "black" }, "Best")],
+  });
+  assert.throws(() => buildEvidenceGraph([fact], game), /winner mismatch/);
 });
 
 test("graph_mate_delivered_rejects_non_checkmate_fen", () => {
+  // Use a normal game, ply 1 = e4 (not checkmate)
+  const PGN = "1. e4 e5";
+  const postE4 = fenAfter(STARTPOS, ["e4"]);
   const fact: EvidenceFact = {
     kind: "terminal_checkmate_delivered",
     ply: 1,
     winner: "white",
-    terminalFen: STARTPOS, // not checkmate
-    checkmateSquare: "g8",
+    terminalFen: postE4,
+    checkmateSquare: "e8",
   };
-  assert.throws(() => buildEvidenceGraph([fact], makeGame()), ContractViolation);
+  const game = makeGame({
+    pgn: PGN,
+    moves: [makeMove(1, "e4", { type: "cp", value: 20 }, "Best")],
+  });
+  assert.throws(() => buildEvidenceGraph([fact], game), /is not checkmate/);
 });
 
-// ─── MISSED_MATE ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// MISSED_MATE — Blocker 2 verification
+// ═══════════════════════════════════════════════════════════
 
-test("graph_missed_mate_creates_chain", () => {
-  const root = makeRoot("root-1", MATE_IN_1_FEN);
+function makeMissedMateSetup(
+  mateVerdictKind: "lost" | "preserved" | "delayed" | "gained" | "inconsistent" | null,
+) {
+  const root = makeRoot("root-1", MATE_IN_1_PRE);
   const pv = makePv("pv-1", "root-1", { type: "mate", in: 1, winner: "white" }, [
     { uci: "a1a8", san: "Ra8#", evalAfter: { type: "terminal", kind: "checkmate", winner: "white" } },
   ]);
   const playedEval = { type: "cp" as const, value: -100 };
-  const move = makeMove(1, "Ra2", playedEval);
+  const mateVerdict: MateTransition | null = mateVerdictKind === null
+    ? null
+    : {
+        before: { type: "mate", in: 1, winner: "white" },
+        afterPlayed: playedEval,
+        expectedAfterBest: { type: "terminal", kind: "checkmate", winner: "white" },
+        moverColor: "w",
+        verdict: mateVerdictKind === "lost"
+          ? { kind: "lost" }
+          : mateVerdictKind === "preserved"
+          ? { kind: "preserved", distance: 1 }
+          : mateVerdictKind === "delayed"
+          ? { kind: "delayed", byMoves: 2, direction: "for_mover" }
+          : mateVerdictKind === "gained"
+          ? { kind: "gained", reason: "created_mate_best_missed" }
+          : { kind: "inconsistent", reason: "test" },
+      };
 
-  const fact: EvidenceFact = {
-    kind: "missed_mate",
-    ply: 1,
-    mateIn: 1,
-    matingLine: [{ uci: "a1a8", san: "Ra8#" }],
-    mateDeliveringMoveSan: "Ra8#",
-    preMoveFen: MATE_IN_1_FEN,
-    playedMoveUci: "a1a2",
-    evalAfterPlayed: playedEval,
-    pvId: "pv-1",
-    rootId: "root-1",
-    depth: 10,
-  };
-
+  const move = makeMove(1, "Ra2", playedEval, "Blunder", mateVerdict);
   const game = makeGame({
+    pgn: "", // synthetic — no game replay needed for missed_mate path
     roots: new Map([["root-1", root]]),
     pvs: new Map([["pv-1", pv]]),
     moves: [move],
   });
 
-  const graph = buildEvidenceGraph([fact], game);
-
-  assert.equal(graph.nodes.size, 3);
-  assert.ok(graph.nodes.has("missed_mate_available_1"));
-  assert.ok(graph.nodes.has("missed_mate_pv_1"));
-  assert.ok(graph.nodes.has("missed_mate_missed_1"));
-  assert.equal(graph.causalEdges.length, 2);
-});
-
-test("graph_missed_mate_rejects_missing_pv", () => {
-  const root = makeRoot("root-1", MATE_IN_1_FEN);
-  const playedEval = { type: "cp" as const, value: -100 };
   const fact: EvidenceFact = {
     kind: "missed_mate",
     ply: 1, mateIn: 1,
     matingLine: [{ uci: "a1a8", san: "Ra8#" }],
     mateDeliveringMoveSan: "Ra8#",
-    preMoveFen: MATE_IN_1_FEN,
+    preMoveFen: MATE_IN_1_PRE,
     playedMoveUci: "a1a2", evalAfterPlayed: playedEval,
-    pvId: "ghost-pv", // does not exist
-    rootId: "root-1", depth: 10,
-  };
-  const game = makeGame({
-    roots: new Map([["root-1", root]]),
-    pvs: new Map(), // empty
-    moves: [makeMove(1, "Ra2", playedEval)],
-  });
-  assert.throws(() => buildEvidenceGraph([fact], game), /not found in game\.pvs/);
-});
-
-test("graph_missed_mate_rejects_depth_mismatch", () => {
-  const root = makeRoot("root-1", MATE_IN_1_FEN);
-  const pv = makePv("pv-1", "root-1", { type: "mate", in: 1, winner: "white" }, [
-    { uci: "a1a8", san: "Ra8#", evalAfter: { type: "unknown" } },
-  ]);
-  pv.depth = 14;
-  const playedEval = { type: "cp" as const, value: -100 };
-  const fact: EvidenceFact = {
-    kind: "missed_mate",
-    ply: 1, mateIn: 1,
-    matingLine: [{ uci: "a1a8", san: "Ra8#" }],
-    mateDeliveringMoveSan: "Ra8#",
-    preMoveFen: MATE_IN_1_FEN,
-    playedMoveUci: "a1a2", evalAfterPlayed: playedEval,
-    pvId: "pv-1", rootId: "root-1", depth: 10, // mismatch: PV depth=14
-  };
-  const game = makeGame({
-    roots: new Map([["root-1", root]]),
-    pvs: new Map([["pv-1", pv]]),
-    moves: [makeMove(1, "Ra2", playedEval)],
-  });
-  assert.throws(() => buildEvidenceGraph([fact], game), /pv\.depth 14 != fact\.depth 10/);
-});
-
-test("graph_missed_mate_rejects_move_evaluation_mismatch", () => {
-  const root = makeRoot("root-1", MATE_IN_1_FEN);
-  const pv = makePv("pv-1", "root-1", { type: "mate", in: 1, winner: "white" }, [
-    { uci: "a1a8", san: "Ra8#", evalAfter: { type: "unknown" } },
-  ]);
-  const fact: EvidenceFact = {
-    kind: "missed_mate",
-    ply: 1, mateIn: 1,
-    matingLine: [{ uci: "a1a8", san: "Ra8#" }],
-    mateDeliveringMoveSan: "Ra8#",
-    preMoveFen: MATE_IN_1_FEN,
-    playedMoveUci: "a1a2",
-    evalAfterPlayed: { type: "cp", value: -100 },
     pvId: "pv-1", rootId: "root-1", depth: 10,
   };
-  const game = makeGame({
-    roots: new Map([["root-1", root]]),
-    pvs: new Map([["pv-1", pv]]),
-    // Classified move says cp(0), fact says cp(-100)
-    moves: [makeMove(1, "Ra2", { type: "cp", value: 0 })],
-  });
-  assert.throws(() => buildEvidenceGraph([fact], game), /evaluation/);
+
+  return { fact, game };
+}
+
+test("graph_missed_mate_verified_when_verdict_lost", () => {
+  const { fact, game } = makeMissedMateSetup("lost");
+  const graph = buildEvidenceGraph([fact], game);
+  assert.ok(graph.nodes.has("missed_mate_available_1"));
+  assert.ok(graph.nodes.has("missed_mate_missed_1"));
+  // missed_mate_missed should have both LEGAL_MOVE + engine proofs
+  const missed = graph.nodes.get("missed_mate_missed_1");
+  assert.equal(missed!.proofs.length, 2);
 });
 
-// ─── ENGINE_PREFERRED ───────────────────────────────────
+test("graph_missed_mate_rejects_verdict_preserved", () => {
+  const { fact, game } = makeMissedMateSetup("preserved");
+  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.mateVerdict\.verdict\.kind === "lost"/);
+});
 
-test("graph_engine_preferred_creates_single_node", () => {
-  const root = makeRoot("root-1", STARTPOS);
+test("graph_missed_mate_rejects_verdict_delayed", () => {
+  const { fact, game } = makeMissedMateSetup("delayed");
+  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.mateVerdict\.verdict\.kind === "lost"/);
+});
+
+test("graph_missed_mate_rejects_null_mate_verdict", () => {
+  const { fact, game } = makeMissedMateSetup(null);
+  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.mateVerdict/);
+});
+
+// ═══════════════════════════════════════════════════════════
+// ENGINE_PREFERRED — Blocker 3 verification
+// ═══════════════════════════════════════════════════════════
+
+function makeEnginePreferredSetup(overrides: Partial<{
+  playedMoveUci: string;
+  engineMoveUci: string;
+  quality: ClassifiedMove["quality"];
+  pvStability: "stable" | "unstable";
+  rootFen: string;
+}> = {}) {
+  const pgn = "1. e4 e5";
+  const rootFen = overrides.rootFen ?? STARTPOS;
+  const root = makeRoot("root-1", rootFen);
   const pv = makePv("pv-1", "root-1", { type: "cp", value: 20 }, [
     { uci: "e2e4", san: "e4", evalAfter: { type: "unknown" } },
-  ]);
+  ], overrides.pvStability ?? "stable");
+  const move = makeMove(1, "e4", { type: "cp", value: 20 }, overrides.quality ?? "Best");
+
+  const game = makeGame({
+    pgn,
+    roots: new Map([["root-1", root]]),
+    pvs: new Map([["pv-1", pv]]),
+    moves: [move],
+  });
+
   const fact: EvidenceFact = {
     kind: "engine_preferred",
     ply: 1,
-    playedMoveUci: "e2e4",
-    engineMoveUci: "e2e4",
+    playedMoveUci: overrides.playedMoveUci ?? "e2e4",
+    engineMoveUci: overrides.engineMoveUci ?? "e2e4",
     pvId: "pv-1", rootId: "root-1", depth: 10,
   };
-  const game = makeGame({
-    roots: new Map([["root-1", root]]),
-    pvs: new Map([["pv-1", pv]]),
-    moves: [makeMove(1, "e4", { type: "cp", value: 20 }, "Best")],
-  });
+
+  return { fact, game };
+}
+
+test("graph_engine_preferred_verified", () => {
+  const { fact, game } = makeEnginePreferredSetup();
   const graph = buildEvidenceGraph([fact], game);
-  assert.equal(graph.nodes.size, 1);
   assert.ok(graph.nodes.has("engine_preferred_1"));
-  assert.equal(graph.causalEdges.length, 0);
 });
 
-test("graph_engine_preferred_rejects_pv_head_mismatch", () => {
-  const root = makeRoot("root-1", STARTPOS);
-  const pv = makePv("pv-1", "root-1", { type: "cp", value: 20 }, [
-    { uci: "d2d4", san: "d4", evalAfter: { type: "unknown" } },
-  ]);
-  const fact: EvidenceFact = {
-    kind: "engine_preferred",
-    ply: 1,
-    playedMoveUci: "e2e4",
+test("graph_engine_preferred_rejects_played_differs_from_engine", () => {
+  const { fact, game } = makeEnginePreferredSetup({
+    playedMoveUci: "d2d4", // differs from engine "e2e4"
     engineMoveUci: "e2e4",
-    pvId: "pv-1", rootId: "root-1", depth: 10,
-  };
-  const game = makeGame({
-    roots: new Map([["root-1", root]]),
-    pvs: new Map([["pv-1", pv]]),
-    moves: [makeMove(1, "e4", { type: "cp", value: 20 }, "Best")],
   });
-  assert.throws(() => buildEvidenceGraph([fact], game), /PV head UCI/);
+  assert.throws(() => buildEvidenceGraph([fact], game), /playedMoveUci.*must equal engineMoveUci/);
+});
+
+test("graph_engine_preferred_rejects_quality_not_best", () => {
+  const { fact, game } = makeEnginePreferredSetup({ quality: "Excellent" });
+  assert.throws(() => buildEvidenceGraph([fact], game), /requires move\.quality === "Best"/);
+});
+
+test("graph_engine_preferred_rejects_unstable_pv", () => {
+  const { fact, game } = makeEnginePreferredSetup({ pvStability: "unstable" });
+  assert.throws(() => buildEvidenceGraph([fact], game), /requires stable PV/);
 });

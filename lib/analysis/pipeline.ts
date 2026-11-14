@@ -46,71 +46,14 @@ import { createClassificationLayer } from "./classify/adapter.ts";
 // Types
 // ═══════════════════════════════════════════════════════════
 
-export interface ReplayPosition {
-  readonly ply: number;
-  readonly fen: string;
-  readonly sideToMove: "w" | "b";
-  readonly san: string;
-  readonly playedMoveUci: string | null;
-}
-
-export interface ReplayResult {
-  readonly positions: readonly ReplayPosition[];
-  readonly headers: Readonly<Record<string, string>>;
-}
+import { replayPgn, type ReplayPosition, type ReplayResult } from "./pgn-replay.ts";
+export { replayPgn };
+export type { ReplayPosition, ReplayResult };
 
 export interface AnalyzeOptions {
   readonly engine?: EngineLayer;
   readonly budgetOverride?: SearchBudget;
   readonly signal?: AbortSignal;
-}
-
-// ═══════════════════════════════════════════════════════════
-// PGN replay
-// ═══════════════════════════════════════════════════════════
-
-export function replayPgn(pgn: string): ReplayResult {
-  const chess = new Chess();
-  try {
-    chess.loadPgn(pgn);
-  } catch (e) {
-    throw new Error(
-      `PGN parse failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-
-  const history = chess.history({ verbose: true });
-  const headers = chess.getHeaders();
-  const replay = new Chess();
-  const positions: ReplayPosition[] = [];
-
-  positions.push({
-    ply: 0,
-    fen: replay.fen(),
-    sideToMove: "w",
-    san: "(start)",
-    playedMoveUci: null,
-  });
-
-  for (let i = 0; i < history.length; i++) {
-    const move = history[i];
-    const result = replay.move(move.san);
-    if (!result) {
-      throw new Error(
-        `PGN replay failed at ply ${i + 1}: move "${move.san}" is not legal ` +
-        `from FEN ${replay.fen()}`,
-      );
-    }
-    positions.push({
-      ply: i + 1,
-      fen: replay.fen(),
-      sideToMove: replay.turn(),
-      san: move.san,
-      playedMoveUci: move.from + move.to + (move.promotion ?? ""),
-    });
-  }
-
-  return { positions, headers: headers as Record<string, string> };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -513,8 +456,10 @@ export async function analyzeGame(
     const explanations = new Map<number, ExplanationOutput>();
     if (allFacts.length > 0) {
       try {
+        const preGraphStatus: "complete" | "partial" =
+          failures.length === 0 ? "complete" : "partial";
         const tempGame: AnalyzedGame = {
-          pgn, status: "partial",
+          pgn, status: preGraphStatus,
           failures, roots, pvs, moves,
           explanations: new Map(), refutations: new Map(), config,
         };
