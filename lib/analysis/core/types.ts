@@ -121,7 +121,11 @@ export type MechanicalRule =
   | "GEOMETRY_DEFENDER_REMOVAL"
   | "LEGAL_MOVE"
   | "PIECE_CONSTRAINED"
-  | "PIECE_UNDEFENDED";
+  | "PIECE_UNDEFENDED"
+  // Stage 5 additions — verifiable from Stage 4 output, no motifs
+  | "TERMINAL_CHECKMATE"
+  | "MATE_CONTINUATION_VERIFIED"
+  | "PLAYED_MATCHES_ENGINE_TOP";
 
 export interface ProofMechanical {
   readonly kind: "mechanical";
