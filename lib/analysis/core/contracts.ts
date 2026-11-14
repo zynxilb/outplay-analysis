@@ -912,6 +912,12 @@ export function validateAnalysisConfig(config: AnalysisConfig): void {
         "AnalysisConfig",
         `epLossThresholds.${level} must be finite >= 0`,
       );
+    // EP is bounded [0, 1]; a threshold above 1 is meaningless.
+    if (v > 1)
+      throw new ContractViolation(
+        "AnalysisConfig",
+        `epLossThresholds.${level} (${v}) must be <= 1 (EP is in [0,1])`,
+      );
   }
   for (let i = 1; i < ordered.length; i++) {
     const prev = t[ordered[i - 1]];

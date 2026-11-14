@@ -1,60 +1,76 @@
 // lib/analysis/evaluate/index.ts
-// EvaluationLayer implementation:
-// - toExpectedScore: delegates to expected-score.ts
-// - toQuality: delegates to qualityFromEvaluation (from contracts.ts)
+// EvaluationLayer implementation.
 //
-// Single source of truth: this file NEVER reimplements thresholds.
+// Two ways to use:
+//   1. Factory: createEvaluationLayer(config) → EvaluationLayer
+//      - Validates config once at construction
+//      - Matches the contract interface exactly
+//      - Required for pipeline integration
+//   2. Direct functions with explicit config (for tests/one-off use)
 
 import type {
   Evaluation,
   ExpectedScore,
   QualityLevel,
   AnalysisConfig,
+  QualityLevel as QL,
 } from "../core/types.ts";
 import {
   qualityFromEvaluation,
   validateAnalysisConfig,
 } from "../core/contracts.ts";
+import type { EvaluationLayer } from "../core/contracts.ts";
 import { toExpectedScore as toExpectedScoreImpl } from "./expected-score.ts";
 
-/**
- * Convert Evaluation → ExpectedScore | null.
- * Uses config.evaluation.epCoefficient and validates config first time.
- */
-let configValidated = false;
-function ensureConfigValid(config: AnalysisConfig): void {
-  if (!configValidated) {
-    validateAnalysisConfig(config);
-    configValidated = true;
-  }
+// ═══════════════════════════════════════════════════════════
+// Factory — matches EvaluationLayer interface
+// ═══════════════════════════════════════════════════════════
+
+export function createEvaluationLayer(config: AnalysisConfig): EvaluationLayer {
+  // Validate once at construction. Any subsequent use trusts this config.
+  validateAnalysisConfig(config);
+  const epCoefficient = config.evaluation.epCoefficient;
+
+  return {
+    toExpectedScore(evaluation: Evaluation): ExpectedScore | null {
+      return toExpectedScoreImpl(evaluation, epCoefficient);
+    },
+
+    toQuality(
+      epLoss: number,
+      cpLoss: number,
+      classification: AnalysisConfig["classification"],
+    ): QualityLevel {
+      return qualityFromEvaluation(epLoss, cpLoss, classification);
+    },
+  };
 }
+
+// ═══════════════════════════════════════════════════════════
+// Direct functions — for tests and ad-hoc calls
+// ═══════════════════════════════════════════════════════════
+// These do NOT memoize validation. Each caller provides a config.
+// Pipeline code should prefer createEvaluationLayer().
 
 export function toExpectedScore(
   evaluation: Evaluation,
   config: AnalysisConfig,
 ): ExpectedScore | null {
-  ensureConfigValid(config);
   return toExpectedScoreImpl(evaluation, config.evaluation.epCoefficient);
 }
 
-/**
- * Convert (epLoss, cpLoss) → QualityLevel.
- * Thin delegation to qualityFromEvaluation — no duplicate logic.
- * Caller is responsible for computing epLoss from mover perspective.
- */
 export function toQuality(
   epLoss: number,
   cpLoss: number,
   config: AnalysisConfig,
 ): QualityLevel {
-  ensureConfigValid(config);
   return qualityFromEvaluation(epLoss, cpLoss, config.classification);
 }
 
 /**
- * Test-only: reset the config validation memo so tests can validate
- * multiple configs in the same process.
+ * @deprecated — the old config-validation memo is gone.
+ * Kept as a no-op for existing test imports.
  */
 export function __resetConfigValidationForTests(): void {
-  configValidated = false;
+  // no-op
 }

@@ -169,13 +169,17 @@ test("to_quality_cp_floor", () => {
   assert.equal(toQuality(0, 250, cfg), "Inaccuracy");
 });
 
-test("to_quality_rejects_invalid_config", () => {
-  __resetConfigValidationForTests();
+test("to_quality_direct_does_not_validate_config", () => {
+  // Direct toQuality is a pure delegation to qualityFromEvaluation.
+  // Config validation is the responsibility of createEvaluationLayer
+  // (which has its own test: factory_throws_on_invalid_config).
+  // The direct form intentionally trusts the caller.
   const cfg = makeConfig();
-  // Break threshold ordering
   (cfg.classification.epLossThresholds as any).Good = -0.5;
-  assert.throws(() => toQuality(0, 0, cfg), /epLossThresholds|AnalysisConfig/);
-  __resetConfigValidationForTests();
+  // No throw — validation is not performed here.
+  assert.doesNotThrow(() => toQuality(0, 0, cfg));
+  // (The invalid config would still be rejected by createEvaluationLayer,
+  // tested separately in factory_throws_on_invalid_config.)
 });
 
 // ─── LRUEvalCache (7) ────────────────────────────────────
@@ -267,4 +271,74 @@ test("cache_clear_resets_everything", () => {
 test("cache_capacity_must_be_positive", () => {
   assert.throws(() => new LRUEvalCache(0), /capacity/);
   assert.throws(() => new LRUEvalCache(-1), /capacity/);
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — createEvaluationLayer factory
+// ═══════════════════════════════════════════════════════════
+
+import { createEvaluationLayer } from "../../lib/analysis/evaluate/index.ts";
+import type { EvaluationLayer } from "../../lib/analysis/core/contracts.ts";
+
+test("factory_returns_valid_EvaluationLayer", () => {
+  const cfg = makeConfig();
+  const layer: EvaluationLayer = createEvaluationLayer(cfg);
+  assert.ok(typeof layer.toExpectedScore === "function");
+  assert.ok(typeof layer.toQuality === "function");
+});
+
+test("factory_toExpectedScore_works_without_config_arg", () => {
+  const cfg = makeConfig();
+  const layer = createEvaluationLayer(cfg);
+  const r = layer.toExpectedScore(cp(0));
+  assert.ok(r);
+  close(r.value, 0.5);
+});
+
+test("factory_toExpectedScore_mate_returns_null", () => {
+  const layer = createEvaluationLayer(makeConfig());
+  assert.equal(layer.toExpectedScore({ type: "mate", in: 3, winner: "white" }), null);
+});
+
+test("factory_toQuality_works_without_config_arg", () => {
+  const layer = createEvaluationLayer(makeConfig());
+  assert.equal(layer.toQuality(0.20, 0, makeConfig().classification), "Blunder");
+});
+
+test("factory_throws_on_invalid_config", () => {
+  const bad = makeConfig();
+  (bad.classification.epLossThresholds as any).Good = -0.5;
+  assert.throws(() => createEvaluationLayer(bad), /epLossThresholds|AnalysisConfig/);
+});
+
+test("factory_second_config_is_validated_independently", () => {
+  // Old global-flag bug: after validating one config, a second invalid
+  // config would silently pass. This test proves the fix.
+  const good = makeConfig();
+  createEvaluationLayer(good);  // first validates fine
+
+  const bad = makeConfig();
+  (bad.classification.epLossThresholds as any).Good = -0.5;
+  assert.throws(() => createEvaluationLayer(bad), /epLossThresholds|AnalysisConfig/);
+});
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 — EP threshold upper bound
+// ═══════════════════════════════════════════════════════════
+
+test("config_rejects_ep_threshold_above_1", () => {
+  const bad = makeConfig();
+  (bad.classification.epLossThresholds as any).Blunder = 1.5;
+  assert.throws(() => createEvaluationLayer(bad), /must be <= 1|<=1/);
+});
+
+test("config_accepts_ep_threshold_exactly_1", () => {
+  const edge = makeConfig();
+  // Chain must still be strictly increasing; set each ≤ 1
+  edge.classification.epLossThresholds = {
+    Best: 0, Excellent: 0.01, Good: 0.03, Inaccuracy: 0.05,
+    Mistake: 0.10, Blunder: 1.0,
+  };
+  assert.doesNotThrow(() => createEvaluationLayer(edge));
 });
