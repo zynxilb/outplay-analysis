@@ -579,7 +579,14 @@ export function validateComparisonCompatibility(
 
     validateSourcedEvaluation(input.evalAfterPlayed, input.postMoveRootId, ctx);
   } else {
-    // Rules-sourced terminal — verify against actual position
+    // Rules-sourced terminal — verify FEN matches the post-move position
+    // AND that the terminal state is real.
+    if (input.evalAfterPlayed.fen !== input.postMoveFen) {
+      throw new ContractViolation(
+        "ComparisonCompatibility",
+        `evalAfterPlayed.fen "${input.evalAfterPlayed.fen}" must match input.postMoveFen "${input.postMoveFen}"`,
+      );
+    }
     validateRulesSourcedEvaluation(input.evalAfterPlayed);
   }
 }
@@ -628,9 +635,17 @@ export function validateRulesSourcedEvaluation(
       }
       break;
     case "draw":
-      // Threefold repetition and 50-move require move history, which a
-      // standalone FEN does not carry. At Stage 4, accept the draw kind
-      // on trust; a future revision will require full move history here.
+      // Only insufficient-material draws are verifiable from FEN alone.
+      // 50-move and threefold repetition require full move history,
+      // which a standalone FEN cannot reconstruct.
+      // Reject unverified draws rather than trusting the caller.
+      if (!chess.isInsufficientMaterial()) {
+        throw new ContractViolation(
+          "RulesSourcedEvaluation",
+          `draw kind not verifiable from FEN alone at Stage 4 (only insufficient-material draws accepted). ` +
+          `Move history is required for 50-move/threefold.`,
+        );
+      }
       break;
   }
 }

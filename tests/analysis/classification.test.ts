@@ -31,13 +31,30 @@ function fakeEval(pvId: string, rootId: string, ev: Evaluation): SourcedEvaluati
 }
 
 function fakeTerminalEval(ev: AnyEvaluation): RulesSourcedEvaluation {
-  // Known checkmate FEN (black to move, mated by white rook on a8)
-  // Known stalemate FEN (black king h8, white king g6, no other pieces)
   let fen: string;
-  if (ev.type === "terminal" && ev.kind === "checkmate") {
-    fen = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";  // checkmate (black mated)
+  if (ev.type === "terminal") {
+    switch (ev.kind) {
+      case "checkmate":
+        // Black to move, black king in check, no escapes. Rook on a8,
+        // black king on g8, white pawns f7/g7/h7 — classic back-rank mate.
+        fen = "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1";
+        break;
+      case "stalemate":
+        // Black king h8, white queen f7, white king g6. Black to move:
+        // h8 not in check. Escapes g8/g7/h7 all attacked. Stalemate.
+        fen = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+        break;
+      case "draw":
+        // Insufficient material: K vs K (no pawns, no pieces).
+        fen = "8/8/8/8/8/4k3/4K3/8 w - - 0 1";
+        break;
+      default: {
+        const _e: never = ev.kind;
+        throw new Error(`unhandled terminal kind ${JSON.stringify(_e)}`);
+      }
+    }
   } else {
-    fen = "7k/8/6K1/8/8/8/8/8 b - - 0 1";  // stalemate
+    fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   }
   return {
     eval: ev as RulesSourcedEvaluation["eval"],

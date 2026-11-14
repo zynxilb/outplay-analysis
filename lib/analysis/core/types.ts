@@ -239,7 +239,8 @@ export interface ClassifiedMove {
   readonly san: string;
   readonly quality: QualityLevel;
   readonly annotations: readonly Annotation[];
-  readonly evaluation: Evaluation;
+  /** Engine OR rules-derived terminal. Terminal checkmate ends the game. */
+  readonly evaluation: AnyEvaluation;
   readonly expectedScore: ExpectedScore | null;
   readonly mateVerdict: MateTransition | null;
   readonly classificationVersion: string;
