@@ -404,8 +404,28 @@ export interface EvalCache {
 
 // ─── Pipeline output ──────────────────────────────────
 
+// ─── Pipeline output ──────────────────────────────────
+
+export type AnalysisStage =
+  | "pgn_parse"
+  | "search"
+  | "classification"
+  | "terminal_validation";
+
+export interface AnalysisFailure {
+  /** Ply where the failure occurred. 0 for game-level (e.g., PGN parse). */
+  readonly ply: number;
+  readonly stage: AnalysisStage;
+  readonly reason: string;
+}
+
+export type AnalysisStatus = "complete" | "partial";
+
 export interface AnalyzedGame {
   readonly pgn: string;
+  /** "complete" = all moves classified. "partial" = some failed. */
+  readonly status: AnalysisStatus;
+  readonly failures: readonly AnalysisFailure[];
   readonly roots: ReadonlyMap<string, AnalysisRoot>;
   readonly pvs: ReadonlyMap<string, PVRecord>;
   readonly moves: readonly ClassifiedMove[];
