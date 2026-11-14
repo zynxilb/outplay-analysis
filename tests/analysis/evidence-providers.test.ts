@@ -159,18 +159,7 @@ test("fact_missed_mate_not_fired_when_verdict_inconsistent", () => {
     mateVerdictKind: "inconsistent",
   }));
   assert.equal(facts.filter((f) => f.kind === "missed_mate").length, 0);
-});test("fact_missed_mate_not_fired_when_verdict_inconsistent", () => {
-  const facts = extractFacts(makeInput({
-    playedMoveUci: "a1a2",
-    preMoveFen: MATE_IN_1_BEFORE,
-    postMoveFen: "6k1/5ppp/8/8/8/8/R7/6K1 b - - 1 1",
-    preMoveRootEval: { type: "mate", in: 1, winner: "white" },
-    preMovePvMoves: [{ uci: "a1a8", san: "Ra8#" }],
-    mateVerdictKind: "inconsistent",
-  }));
-  assert.equal(facts.filter((f) => f.kind === "missed_mate").length, 0);
 });
-
 test("fact_missed_mate_not_fired_when_pv_does_not_reach_checkmate", () => {
   // Legal PV that ends in check but NOT checkmate. The mate-distance
   // check (ceil(3 plies / 2) = 2) passes, so the test reaches the
