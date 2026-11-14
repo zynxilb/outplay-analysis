@@ -424,3 +424,94 @@ test("adapter_rejects_malformed_pv", async () => {
   );
   await a.dispose();
 });
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 2.1 closure — full abort-then-queue sequence
+// ═══════════════════════════════════════════════════════════
+
+test("adapter_abort_then_queued_search_completes", async () => {
+  const engine = new MockEngine();
+  const a = makeAdapter(engine, { searchTimeoutMs: 10000 });
+  await a.initialize(engineCfg);
+
+  // Track timing: B must not receive its "go" command before A's bestmove
+  const events: string[] = [];
+  let goCount = 0;
+  let stopReceived = false;
+  let bestmoveEmitted = false;
+
+  const origReceive = engine.receive.bind(engine);
+  engine.receive = (data: string, w: MockWorker) => {
+    if (data.startsWith("go ")) {
+      goCount++;
+      events.push(goCount === 1 ? "A:go" : "B:go");
+      if (goCount === 1) {
+        // Search A: wait for "stop" to emit bestmove
+        return;
+      }
+      // Search B: emit a valid result
+      queueMicrotask(() => {
+        events.push("B:bestmove");
+        w.emit("info depth 10 multipv 1 score cp 15 nodes 8000 pv e2e4 e7e5");
+        w.emit("bestmove e2e4");
+      });
+      return;
+    }
+    if (data === "stop") {
+      stopReceived = true;
+      events.push("A:stop");
+      queueMicrotask(() => {
+        if (!bestmoveEmitted) {
+          bestmoveEmitted = true;
+          events.push("A:bestmove");
+          w.emit("info depth 8 multipv 1 score cp 20 nodes 5000 pv e2e4");
+          w.emit("bestmove e2e4");
+        }
+      });
+      return;
+    }
+    origReceive(data, w);
+  };
+
+  const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+  // 1. Start A
+  const pA = a.search(fen, "find-best-move", { kind: "movetime", value: 5000 });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(goCount, 1, "A should have started");
+
+  // 2. Queue B (will not start because state is 'searching')
+  const pB = a.search(fen, "find-best-move", { kind: "movetime", value: 300 });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(goCount, 1, "B must NOT start before A finishes");
+
+  // 3. Abort A
+  await a.abort();
+  assert.ok(stopReceived, "A must receive 'stop'");
+
+  // 4. A rejects with AbortError
+  await assert.rejects(pA, (err: any) => {
+    assert.equal(err.name, "AbortError");
+    return true;
+  });
+
+  // 5. B starts only after A's bestmove is consumed
+  //    We check via event ordering
+  const aBestmoveIdx = events.indexOf("A:bestmove");
+  const bGoIdx = events.indexOf("B:go");
+  assert.ok(aBestmoveIdx >= 0, "A:bestmove event must exist");
+  assert.ok(bGoIdx >= 0, "B:go event must exist");
+  assert.ok(
+    aBestmoveIdx < bGoIdx,
+    `B must start after A's bestmove. Events: ${events.join(" → ")}`,
+  );
+
+  // 6. B completes successfully
+  const result = await pB;
+  assert.equal(result.root.fen, fen);
+  assert.equal(result.pv.moves[0].uci, "e2e4");
+  assert.equal(goCount, 2, "exactly 2 'go' commands: A then B");
+
+  await a.dispose();
+});

@@ -16,13 +16,14 @@ evaluations.
 When evidence is insufficient, the system says **"التحليل غير كافٍ"** — it does
 not fabricate.
 
-## Status: Stage 1 complete
+## Status: Stage 2.1 complete
 
 | Stage | Description | Status |
 |-------|-------------|--------|
-| 1 | Dependency audit + contract tests | ✅ Complete (95 tests) |
-| 2 | Stockfish adapter + evaluation | 🔜 Next |
-| 3 | Classifier | Planned |
+| 1 | Dependency audit + contract tests | ✅ Complete |
+| 2 | Stockfish adapter + evaluation | ✅ Complete |
+| 2.1 | Engine + evaluation hardening | ✅ Complete |
+| 3 | Classifier | 🔜 Next |
 | 4 | Pipeline (PGN → classification) | Planned |
 | 5 | Arabic explanation | Planned |
 | 6 | Fork detection | Planned |
@@ -35,7 +36,19 @@ not fabricate.
 npm test
 ```
 
-Expected: `# tests 95`, `# pass 95`.
+Expected: `# tests 160`, `# pass 160`, `# fail 0`.
+
+## Benchmark
+
+```bash
+npm run dev
+# in another terminal:
+node scripts/bench-stockfish.mjs
+```
+
+Runs the Opera Game (34 board states, 33 searched + 1 terminal skipped)
+through a real browser Worker via `StockfishAdapter`. Measured results
+live in `docs/benchmarks/stockfish-lite.md`.
 
 ## Architecture
 

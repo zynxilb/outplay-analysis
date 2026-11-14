@@ -56,8 +56,17 @@ type PositionResult = {
   scoreValue: string;
 };
 
+type SkippedPosition = {
+  ply: number;
+  fen: string;
+  san: string;
+  reason: string;
+};
+
 type Summary = {
-  totalPositions: number;
+  totalBoardStates: number;
+  searchedPositions: number;
+  skippedTerminal: number;
   totalMs: number;
   avgMs: number;
   coldStartMs: number;
@@ -83,12 +92,18 @@ function buildPositionsFromPgn(pgn: string): Array<{ fen: string; san: string; p
   return result;
 }
 
-function computeSummary(results: PositionResult[], coldStartMs: number): Summary {
+function computeSummary(
+  results: PositionResult[],
+  skipped: SkippedPosition[],
+  coldStartMs: number,
+): Summary {
   const times = results.map((r) => r.elapsedMs).sort((a, b) => a - b);
   const n = times.length;
   const total = times.reduce((a, b) => a + b, 0);
   return {
-    totalPositions: n,
+    totalBoardStates: n + skipped.length,
+    searchedPositions: n,
+    skippedTerminal: skipped.length,
     totalMs: total,
     avgMs: n ? total / n : 0,
     coldStartMs,
@@ -100,8 +115,20 @@ function computeSummary(results: PositionResult[], coldStartMs: number): Summary
   };
 }
 
+/** Check whether the position has no legal move to search. */
+function isTerminalPosition(fen: string): { terminal: boolean; reason: string } {
+  const chess = new Chess(fen);
+  if (chess.isCheckmate()) return { terminal: true, reason: "checkmate" };
+  if (chess.isStalemate()) return { terminal: true, reason: "stalemate" };
+  if (chess.isInsufficientMaterial()) return { terminal: true, reason: "insufficient material" };
+  if (chess.isThreefoldRepetition()) return { terminal: true, reason: "threefold repetition" };
+  if (chess.isDraw()) return { terminal: true, reason: "draw (50-move or other)" };
+  return { terminal: false, reason: "" };
+}
+
 export default function EngineBenchmarkPage() {
   const [results, setResults] = useState<PositionResult[]>([]);
+  const [skipped, setSkipped] = useState<SkippedPosition[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [phase, setPhase] = useState<"idle" | "running" | "done" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -137,12 +164,20 @@ export default function EngineBenchmarkPage() {
         if (cancelled) return;
 
         const collected: PositionResult[] = [];
+        const skippedList: SkippedPosition[] = [];
         let errorCount = 0;
 
         for (let i = 0; i < positions.length; i++) {
           if (cancelled) return;
           const pos = positions[i];
           setProgress({ done: i, total: positions.length });
+
+          const term = isTerminalPosition(pos.fen);
+          if (term.terminal) {
+            skippedList.push({ ply: pos.ply, fen: pos.fen, san: pos.san, reason: term.reason });
+            log(`[${i + 1}/${positions.length}] ply ${pos.ply} (${pos.san}): SKIPPED (${term.reason})`);
+            continue;
+          }
 
           try {
             const start = performance.now();
@@ -171,9 +206,10 @@ export default function EngineBenchmarkPage() {
         }
 
         setProgress({ done: positions.length, total: positions.length });
-        const sum = computeSummary(collected, coldStartMs);
+        const sum = computeSummary(collected, skippedList, coldStartMs);
         sum.errorCount = errorCount;
         setResults(collected);
+        setSkipped(skippedList);
         setSummary(sum);
         setPhase("done");
 
@@ -181,6 +217,7 @@ export default function EngineBenchmarkPage() {
         (window as any).__BENCHMARK_RESULTS__ = {
           summary: sum,
           results: collected,
+          skipped: skippedList,
           workerUrl: "/engine/stockfish-19-lite-single.js",
           budget: SEARCH_BUDGET,
           source: "Opera Game (Morphy 1858), 34 board states via chess.js PGN parse, StockfishAdapter",
@@ -227,15 +264,18 @@ export default function EngineBenchmarkPage() {
 
         {summary && (
           <div className="border border-[#1F2229] bg-[#16171B] p-4 space-y-2">
-            <h2 className="text-lg font-semibold">Summary — {summary.totalPositions} board states</h2>
+            <h2 className="text-lg font-semibold">Summary — {summary.totalBoardStates} board states</h2>
             <table className="w-full text-sm">
               <tbody>
                 <tr><td className="text-[#8B8F98] w-56">Cold start:</td><td>{summary.coldStartMs.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">Total analysis time:</td><td>{summary.totalMs.toFixed(0)} ms ({summary.totalPositions} positions)</td></tr>
+                <tr><td className="text-[#8B8F98]">Total board states:</td><td>{summary.totalBoardStates}</td></tr>
+                <tr><td className="text-[#8B8F98]">Searched positions:</td><td>{summary.searchedPositions}</td></tr>
+                <tr><td className="text-[#8B8F98]">Skipped (terminal):</td><td>{summary.skippedTerminal}</td></tr>
+                <tr><td className="text-[#8B8F98]">Total analysis time:</td><td>{summary.totalMs.toFixed(0)} ms ({summary.searchedPositions} positions)</td></tr>
                 <tr><td className="text-[#8B8F98]">Average per position:</td><td>{summary.avgMs.toFixed(0)} ms</td></tr>
                 <tr><td className="text-[#8B8F98]">p50 / p95 / max:</td><td>{summary.p50Ms.toFixed(0)} / {summary.p95Ms.toFixed(0)} / {summary.maxMs.toFixed(0)} ms</td></tr>
                 <tr><td className="text-[#8B8F98]">Min:</td><td>{summary.minMs.toFixed(0)} ms</td></tr>
-                <tr><td className="text-[#8B8F98]">Errors:</td><td>{summary.errorCount}</td></tr>
+                <tr><td className="text-[#8B8F98]">Unexpected errors:</td><td>{summary.errorCount}</td></tr>
               </tbody>
             </table>
           </div>
