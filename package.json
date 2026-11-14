@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test --experimental-strip-types tests/analysis/*.test.ts",
-    "bench": "node scripts/bench-stockfish.mjs"
+    "bench": "node scripts/bench-stockfish.mjs",
+    "test:pipeline": "node scripts/test-pipeline.mjs"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
