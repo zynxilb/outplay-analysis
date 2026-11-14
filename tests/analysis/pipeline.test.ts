@@ -189,10 +189,14 @@ test("analyze_game_mock_terminal_final_move_classified", async () => {
 });
 
 // ─── Test 9: explanations/refutations empty ────────────
-test("analyze_game_mock_empty_explanations_refutations", async () => {
+test("analyze_game_mock_explanations_populated_refutations_empty", async () => {
+  // Stage 5 Day 2: explanations are populated (Stage 4 scope removed).
   const engine = new MockEngine();
   const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
-  assert.equal(result.explanations.size, 0);
+  assert.ok(
+    result.explanations.size > 0,
+    `expected explanations.size > 0 (Stage 5 Day 2 scope), got ${result.explanations.size}`,
+  );
   assert.equal(result.refutations.size, 0);
 });
 
@@ -461,4 +465,39 @@ test("cancellation_does_not_misclassify_as_recoverable_failure", async () => {
     0,
     `unexpected recoverable-like failures: ${JSON.stringify(recoverableLike)}`,
   );
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 5 Day 2 — pipeline populates explanations
+// ═══════════════════════════════════════════════════════════
+
+test("analyze_game_populates_explanations_map", async () => {
+  const engine = new MockEngine();
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+  assert.ok(
+    result.explanations.size > 0,
+    `expected explanations.size > 0, got ${result.explanations.size}`,
+  );
+  // The final move (17.Rd8#) delivers checkmate. It should have
+  // MATE_DELIVERED explanation.
+  const finalExp = result.explanations.get(33);
+  assert.ok(finalExp, "expected explanation at ply 33 (Rd8#)");
+  assert.equal(finalExp!.status, "explained");
+  if (finalExp!.status === "explained") {
+    assert.ok(
+      finalExp!.primary.rootCause.id.startsWith("mate_delivered_"),
+      `expected mate_delivered rootCause, got "${finalExp!.primary.rootCause.id}"`,
+    );
+  }
+});
+
+test("analyze_game_explanations_empty_when_no_facts", async () => {
+  // Short game with no mate — facts should not fire.
+  const shortPgn = "1.e4 e5 2.Nf3";
+  const engine = new MockEngine();
+  const result = await analyzeGame(shortPgn, CONFIG, { engine });
+  // No mate delivered, no missed mate, engine_preferred might fire but
+  // doesn't produce explanations. So explanations should be empty.
+  assert.equal(result.explanations.size, 0);
 });

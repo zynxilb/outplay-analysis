@@ -414,7 +414,8 @@ export type AnalysisStage =
   | "pgn_parse"
   | "search"
   | "classification"
-  | "terminal_validation";
+  | "terminal_validation"
+  | "explanation";
 
 export interface AnalysisFailure {
   /** Ply where the failure occurred. 0 for game-level (e.g., PGN parse). */

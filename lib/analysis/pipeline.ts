@@ -21,6 +21,7 @@ import type {
   AnalysisFailure,
   AnalysisRoot,
   ClassifiedMove,
+  ExplanationOutput,
   PVRecord,
   RulesSourcedEvaluation,
   SourcedEvaluation,
@@ -35,6 +36,9 @@ import {
   type EngineLayer,
   type ValidationContext,
 } from "./core/contracts.ts";
+import { extractFacts, type EvidenceFact } from "./explain/evidence-providers.ts";
+import { buildEvidenceGraph } from "./explain/graph-builder.ts";
+import { planExplanations } from "./explain/planner.ts";
 import { StockfishAdapter } from "./engine/stockfish.ts";
 import { createClassificationLayer } from "./classify/adapter.ts";
 
@@ -301,6 +305,7 @@ export async function analyzeGame(
     const pvs = new Map<string, PVRecord>();
     const moves: ClassifiedMove[] = [];
     const classificationLayer = createClassificationLayer();
+    const allFacts: EvidenceFact[] = [];
 
     let prevSearch: { root: AnalysisRoot; pv: PVRecord } | null = null;
     let stopped = false; // set by fatal/abort to break outer loop cleanly
@@ -467,13 +472,68 @@ export async function analyzeGame(
         continue;
       }
 
+      // Extract evidence facts for this ply (Stage 5 Day 2 wiring).
+      // Fail-soft: extraction failure is recorded, not fatal.
+      try {
+        const classified = moves[moves.length - 1];
+        if (!preSearch) {
+          throw new Error("preSearch is null after successful classification (pipeline invariant)");
+        }
+        const mateVerdictKind = classified.mateVerdict?.verdict.kind ?? null;
+        const facts = extractFacts({
+          ply: plyNum,
+          moverColor,
+          playedMoveUci,
+          quality: classified.quality,
+          evalAfterPlayed: classified.evaluation,
+          preMoveFen: fromPos.fen,
+          postMoveFen: toPos.fen,
+          preMoveRootEval: preSearch.pv.rootEval,
+          preMovePvMoves: preSearch.pv.moves.map((m) => ({ uci: m.uci, san: m.san })),
+          preMovePvStability: preSearch.pv.stability,
+          mateVerdictKind,
+          preMovePvId: preSearch.pv.id,
+          preMoveRootId: preSearch.root.id,
+          preMoveDepth: preSearch.pv.depth,
+        });
+        allFacts.push(...facts);
+      } catch (e) {
+        failures.push({
+          ply: plyNum,
+          stage: "explanation",
+          reason: `Fact extraction failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+
       prevSearch = postSearch;
+    }
+
+    // Build evidence graph + plan explanations (Stage 5 Day 2).
+    // Any failure here becomes a ply-0 "explanation" failure, not fatal.
+    const explanations = new Map<number, ExplanationOutput>();
+    if (allFacts.length > 0) {
+      try {
+        const tempGame: AnalyzedGame = {
+          pgn, status: "partial",
+          failures, roots, pvs, moves,
+          explanations: new Map(), refutations: new Map(), config,
+        };
+        const graph = buildEvidenceGraph(allFacts, tempGame);
+        const planned = planExplanations(graph);
+        for (const [ply, exp] of planned) explanations.set(ply, exp);
+      } catch (e) {
+        failures.push({
+          ply: 0,
+          stage: "explanation",
+          reason: `Graph build/plan failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
     }
 
     const status = failures.length === 0 ? "complete" : "partial";
     return {
       pgn, status, failures, roots, pvs, moves,
-      explanations: new Map(), refutations: new Map(), config,
+      explanations, refutations: new Map(), config,
     };
   } finally {
     if (ownsEngine) {

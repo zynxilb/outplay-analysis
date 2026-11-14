@@ -45,7 +45,7 @@ async function main() {
     if (result.lastMoveQuality !== "Best") functionalFailures.push(`lastMoveQuality="${result.lastMoveQuality}" (expected "Best")`);
     if (result.firstMoveSan !== "e4") functionalFailures.push(`firstMoveSan="${result.firstMoveSan}" (expected "e4")`);
     if (result.failuresCount !== 0) functionalFailures.push(`failuresCount=${result.failuresCount} (expected 0)`);
-    if (result.explanationsCount !== 0) functionalFailures.push(`explanationsCount=${result.explanationsCount} (expected 0 — Stage 4 scope)`);
+    if (result.explanationsCount < 1) functionalFailures.push(`explanationsCount=${result.explanationsCount} (expected >= 1 — Stage 5 Day 2)`);
     if (result.refutationsCount !== 0) functionalFailures.push(`refutationsCount=${result.refutationsCount} (expected 0 — Stage 4 scope)`);
     if (result.rootsCount !== result.pvsCount) functionalFailures.push(`rootsCount=${result.rootsCount} != pvsCount=${result.pvsCount}`);
 
