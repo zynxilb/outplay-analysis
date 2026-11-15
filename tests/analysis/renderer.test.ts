@@ -7,8 +7,8 @@ import {
 } from "../../lib/analysis/explain/renderer.ts";
 import { planExplanations } from "../../lib/analysis/explain/planner.ts";
 import { ContractViolation } from "../../lib/analysis/core/contracts.ts";
+import { VALID_ANALYSIS_CONFIG } from "../fixtures/analysis-config.ts";
 import type {
-  AnalysisConfig,
   AnalyzedGame,
   CausalEdge,
   ClassifiedMove,
@@ -127,7 +127,7 @@ function makeGame(overrides: {
     moves: overrides.moves ?? [],
     explanations: new Map(),
     refutations: new Map(),
-    config: {} as AnalysisConfig,
+    config: VALID_ANALYSIS_CONFIG,
   };
 }
 

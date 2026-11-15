@@ -168,6 +168,21 @@ const TEMPLATES: Record<
 
 // ─── Public API ──────────────────────────────────────────
 
+/**
+ * Localize a validated explanation into Arabic.
+ *
+ * PRECONDITION: `output` must be the result of `planExplanations()`, or
+ * must otherwise have passed `validatePlannedExplanation(output, graph)`.
+ * This function does not re-verify causal connectivity — that is the
+ * planner's job. It only enforces template-level requirements (chain
+ * length, exact IDs, required ProofEngine / PV / classified move).
+ *
+ * @param graph Reserved for Day 4+ cross-checks. Unused in Day 3.
+ * @returns LocalizedExplanation on success; null when silent or when
+ *          the root cause ID does not match any supported template.
+ * @throws ContractViolation when the plan is malformed for its template
+ *         (a planner bug, not a user-facing state).
+ */
 export function renderExplanation(
   output: ExplanationOutput,
   graph: EvidenceGraph,
