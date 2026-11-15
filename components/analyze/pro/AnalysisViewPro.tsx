@@ -30,7 +30,8 @@ function squareToXY(square: Square, isFlipped: boolean): { x: number; y: number 
   return { x: col * 100 + 50, y: row * 100 + 50 };
 }
 
-function evalBarPercent(cp: number): number {
+function evalBarPercent(cp: number | null): number {
+  if (cp === null) return 50;
   const clamped = Math.max(-800, Math.min(800, cp));
   return Math.round(50 + (clamped / 800) * 42);
 }
@@ -152,7 +153,7 @@ export function AnalysisViewPro({
         movePrefix: "",
         moveSan: step.san,
         evalLabel: activePly.evalLabel,
-        explanationAr: step.noteAr,
+        coachText: step.noteAr,
       };
     }
     if (!activePly) {
@@ -161,20 +162,21 @@ export function AnalysisViewPro({
         badgeClasses: "bg-white/10 text-zinc-200 border-white/15",
         movePrefix: "",
         moveSan: "Start",
-        evalLabel: "0.00",
-        explanationAr: "اختر نقلة من القائمة لبدء المراجعة.",
+        evalLabel: "—",
+        coachText: "اختر نقلة من القائمة لبدء المراجعة.",
       };
     }
-    const meta = QUALITY_META[activePly.quality];
+    const meta = activePly.quality ? QUALITY_META[activePly.quality] : null;
     return {
-      badgeLabel: meta.labelAr,
-      badgeClasses: meta.pillClasses,
+      badgeLabel: meta ? meta.labelAr : "لم تُحلل",
+      badgeClasses: meta ? meta.pillClasses : "bg-white/5 text-zinc-400 border-white/10",
       movePrefix: `${activePly.moveNumber}${activePly.color === "w" ? "." : "..."}`,
       moveSan: activePly.san,
       evalLabel: activePly.evalLabel,
-      explanationAr:
-        activePly.explanationAr ||
-        "لا يوجد شرح متاح لهذه النقلة من بين القوالب المعتمدة.",
+      coachText: activePly.quality
+        ? activePly.explanationAr ||
+          "لا يوجد شرح متاح لهذه النقلة من بين القوالب المعتمدة."
+        : "لم تُحلل هذه النقلة — لا يمكن عرض تصنيف أو شرح.",
     };
   }, [activePly, refutationStep]);
 
@@ -203,7 +205,7 @@ export function AnalysisViewPro({
 
   const hasBest = Boolean(activePly?.bestMove);
   const hasRefutation = Boolean(activePly && activePly.refutationLine.length > 0);
-  const evalPct = evalBarPercent(activePly ? activePly.evalCp : 0);
+  const evalPct = evalBarPercent(activePly ? activePly.evalCp : null);
 
   // Empty state (bad PGN or empty analysis)
   if (timeline.length === 0) {
@@ -268,6 +270,20 @@ export function AnalysisViewPro({
         </div>
       </header>
 
+      {/* Partial-analysis banner */}
+      {game.status !== "complete" && (
+        <div dir="rtl" className="shrink-0 px-3 lg:px-4 pt-2 max-w-6xl w-full mx-auto">
+          <div className="bg-[#E0B252]/10 border border-[#E0B252]/30 text-[#E0B252] text-xs sm:text-sm px-3 py-2 rounded-lg">
+            تحليل جزئي — بعض النقلات لم تُحلَّل. النتائج الظاهرة مبنية على ما اكتمل فقط.
+            {game.failures.length > 0 && (
+              <span className="opacity-80">
+                {" "}({game.failures.length} حالة فشل مسجلة)
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Workspace */}
       <main className="w-full flex-1 min-h-0 flex flex-col justify-between lg:max-w-6xl lg:mx-auto lg:px-4 lg:py-3 lg:grid lg:grid-cols-12 lg:gap-4 lg:items-center">
         {/* Mobile coach strip */}
@@ -275,7 +291,7 @@ export function AnalysisViewPro({
           <div className="bg-[#1A1E29] border-t border-white/15 border-x border-b border-white/[0.06] shadow-xl rounded-xl px-3 py-2 flex flex-col gap-1">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                {activePly && refutationStep === null && (
+                {activePly?.quality && refutationStep === null && (
                   <InlineQualityDot quality={activePly.quality} />
                 )}
                 <h2 className="text-[14px] font-bold text-[#F8FAFC] leading-tight whitespace-nowrap shrink-0">
@@ -300,7 +316,7 @@ export function AnalysisViewPro({
               </span>
             </div>
             <p className="text-[12.5px] leading-snug text-[#CBD5E1] line-clamp-2">
-              {coachDisplay.explanationAr}
+              {coachDisplay.coachText}
             </p>
           </div>
         </div>
@@ -406,7 +422,7 @@ export function AnalysisViewPro({
           <div dir="rtl" className="bg-[#1A1E29] border border-white/15 rounded-xl p-4 space-y-2 shadow-xl">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                {activePly && refutationStep === null && (
+                {activePly?.quality && refutationStep === null && (
                   <InlineQualityDot quality={activePly.quality} />
                 )}
                 <span
@@ -433,7 +449,7 @@ export function AnalysisViewPro({
               </span>
             </div>
             <p className="text-[13.5px] leading-relaxed text-[#CBD5E1]">
-              {coachDisplay.explanationAr}
+              {coachDisplay.coachText}
             </p>
           </div>
 
@@ -454,14 +470,16 @@ export function AnalysisViewPro({
                     {wMove ? (
                       <button
                         onClick={() => goToPly(wMove.plyIndex)}
+                        title={wMove.quality ? QUALITY_META[wMove.quality].labelAr : "لم تُحلل هذه النقلة"}
+                        aria-label={wMove.quality ? QUALITY_META[wMove.quality].labelAr : "لم تُحلل هذه النقلة"}
                         className={`flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors ${
                           wMove.plyIndex === currentPly
                             ? "bg-[#D84040]/20 border border-[#D84040]"
                             : "hover:bg-white/[0.04]"
-                        }`}
+                        } ${!wMove.quality ? "opacity-60" : ""}`}
                       >
-                        <InlineQualityDot quality={wMove.quality} />
-                        <span className="font-mono text-xs text-white truncate">
+                        {wMove.quality && <InlineQualityDot quality={wMove.quality} />}
+                        <span className={`font-mono text-xs truncate ${wMove.quality ? "text-white" : "text-zinc-500"}`}>
                           {wMove.san}
                         </span>
                       </button>
@@ -471,14 +489,16 @@ export function AnalysisViewPro({
                     {bMove ? (
                       <button
                         onClick={() => goToPly(bMove.plyIndex)}
+                        title={bMove.quality ? QUALITY_META[bMove.quality].labelAr : "لم تُحلل هذه النقلة"}
+                        aria-label={bMove.quality ? QUALITY_META[bMove.quality].labelAr : "لم تُحلل هذه النقلة"}
                         className={`flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors ${
                           bMove.plyIndex === currentPly
                             ? "bg-[#D84040]/20 border border-[#D84040]"
                             : "hover:bg-white/[0.04]"
-                        }`}
+                        } ${!bMove.quality ? "opacity-60" : ""}`}
                       >
-                        <InlineQualityDot quality={bMove.quality} />
-                        <span className="font-mono text-xs text-white truncate">
+                        {bMove.quality && <InlineQualityDot quality={bMove.quality} />}
+                        <span className={`font-mono text-xs truncate ${bMove.quality ? "text-white" : "text-zinc-500"}`}>
                           {bMove.san}
                         </span>
                       </button>
@@ -582,7 +602,7 @@ export function AnalysisViewPro({
                     : "bg-[#1A1E29] border border-white/5 text-slate-300"
                 }`}
               >
-                <InlineQualityDot quality={ply.quality} />
+                {ply.quality && <InlineQualityDot quality={ply.quality} />}
                 {ply.san}
               </button>
             ))}

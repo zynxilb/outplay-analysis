@@ -28,8 +28,11 @@ export default function AnalyzePage() {
 
     const engine = new StockfishAdapter();
     try {
-      await engine.initialize(ANALYSIS_CONFIG.engine);
-
+      // NOTE: analyzeGame() initializes any engine passed via
+      // AnalyzeOptions.engine. Calling initialize() here would reject
+      // (StockfishAdapter accepts only one init per lifetime) and the
+      // pipeline would return an empty partial result. The page keeps
+      // ownership of disposal via the finally block.
       const game = await analyzeGame(pgn, ANALYSIS_CONFIG, {
         engine,
         signal: controller.signal,

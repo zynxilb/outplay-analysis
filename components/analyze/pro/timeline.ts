@@ -33,9 +33,9 @@ export interface ComputedPly {
   prevFen: string;
   isCapture: boolean;
   isCheck: boolean;
-  evalCp: number;
-  evalLabel: string;
-  quality: MoveQuality;
+  evalCp: number | null;       // null = unknown or unanalyzed
+  evalLabel: string;           // "—" when evalCp is null
+  quality: MoveQuality | null; // null = unanalyzed
   explanationAr: string;
   bestMove: { san: string; from: Square; to: Square } | null;
   refutationLine: Array<{
@@ -47,7 +47,8 @@ export interface ComputedPly {
   }>;
 }
 
-function formatEval(evalCp: number): string {
+function formatEval(evalCp: number | null): string {
+  if (evalCp === null) return "—";
   if (evalCp >= 9000) return "+M";
   if (evalCp <= -9000) return "-M";
   const pawns = evalCp / 100;
@@ -55,7 +56,7 @@ function formatEval(evalCp: number): string {
   return pawns > 0 ? `+${pawns.toFixed(2)}` : pawns.toFixed(2);
 }
 
-function evalToCp(evaluation: ClassifiedMove["evaluation"]): number {
+function evalToCp(evaluation: ClassifiedMove["evaluation"]): number | null {
   if (evaluation.type === "cp") return evaluation.value;
   if (evaluation.type === "mate") {
     return evaluation.winner === "white" ? 10000 : -10000;
@@ -64,9 +65,15 @@ function evalToCp(evaluation: ClassifiedMove["evaluation"]): number {
     if (evaluation.kind === "checkmate") {
       return evaluation.winner === "white" ? 10000 : -10000;
     }
-    return 0;
+    return null;
   }
-  return 0;
+  return null;
+}
+
+
+function sideToMoveFromFen(fen: string): "w" | "b" {
+  const parts = fen.trim().split(/\s+/);
+  return parts[1] === "b" ? "b" : "w";
 }
 
 function moveFromUci(fen: string, uci: string): { san: string; from: Square; to: Square } | null {
@@ -206,7 +213,7 @@ export function buildTimelineFromGame(
       timeline.push({
         plyIndex: pos.ply,
         moveNumber: Math.floor((pos.ply + 1) / 2),
-        color: (pos.ply % 2 === 1 ? "w" : "b") as Color,
+        color: sideToMoveFromFen(prev.fen),
         san: pos.san,
         from,
         to,
@@ -214,9 +221,9 @@ export function buildTimelineFromGame(
         prevFen: prev.fen,
         isCapture,
         isCheck,
-        evalCp: 0,
+        evalCp: null,
         evalLabel: "—",
-        quality: "good",
+        quality: null,
         explanationAr: "",
         bestMove: null,
         refutationLine: [],
@@ -230,7 +237,7 @@ export function buildTimelineFromGame(
     timeline.push({
       plyIndex: pos.ply,
       moveNumber: Math.floor((pos.ply + 1) / 2),
-      color: (pos.ply % 2 === 1 ? "w" : "b") as Color,
+      color: sideToMoveFromFen(prev.fen),
       san: pos.san,
       from,
       to,
