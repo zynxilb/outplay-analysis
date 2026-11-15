@@ -1,7 +1,9 @@
 // lib/analysis/explain/refutation-ar.ts
 //
-// Stage 5 Day 5: Arabic rendering of RefutationLine.
-// Silent (null) on insufficient evidence.
+// Stage 5 Day 5 — Arabic rendering of RefutationLine.
+// Silent (null) on insufficient evidence. Both demonstrated-state
+// variants render the same template; they differ only in the evidence
+// they cite, which the user does not need to distinguish.
 
 import type { RefutationLine } from "../core/types.ts";
 import { ContractViolation } from "../core/contracts.ts";
@@ -18,7 +20,7 @@ export function renderRefutation(
   if (line.moves.length < 2) {
     throw new ContractViolation(
       "refutation-renderer",
-      `consequence_demonstrated requires >= 2 moves, got ${line.moves.length}`,
+      `demonstrated refutation requires >= 2 moves, got ${line.moves.length}`,
     );
   }
   const best = line.moves[0].san;

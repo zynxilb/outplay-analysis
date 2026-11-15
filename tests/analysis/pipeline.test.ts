@@ -46,6 +46,8 @@ interface MockOptions {
   readonly failAtPly?: number; // reject search at this fen (by index, 0-based)
   readonly fatalAtPly?: number;
   readonly cpValue?: number;
+  /** Per-search-index cp value. Overrides `cpValue` for those indices. */
+  readonly cpBySearchIdx?: Readonly<Record<number, number>>;
 }
 
 class MockEngine implements EngineLayer {
@@ -74,6 +76,7 @@ class MockEngine implements EngineLayer {
       throw new Error(`Stockfish: forced fatal at ${idx}`);
     }
     this.counter++;
+    const cp = this.opts.cpBySearchIdx?.[idx] ?? this.opts.cpValue ?? 20;
 
     // Realistic mock: detect mate-in-1 via chess.js so the classifier
     // sees a consistent mate score (not cp). Without this, positions
@@ -83,7 +86,7 @@ class MockEngine implements EngineLayer {
     const mover = chess.turn(); // 'w' | 'b' — side to move
     const legalMoves = chess.moves({ verbose: true });
 
-    let rootEval: Evaluation = { type: "cp", value: this.opts.cpValue ?? 20 };
+    let rootEval: Evaluation = { type: "cp", value: cp };
     let pvMove = { uci: "e2e4", san: "e4" };
 
     for (const m of legalMoves) {
@@ -99,6 +102,26 @@ class MockEngine implements EngineLayer {
         pvMove = { uci: m.from + m.to + (m.promotion ?? ""), san: m.san };
         break;
       }
+    }
+
+    // Two-move PV (best + reply) so refutation rendering has ≥2 moves.
+    const pvMoves: { uci: string; san: string; evalAfter: Evaluation }[] = [
+      { uci: pvMove.uci, san: pvMove.san, evalAfter: { type: "unknown" } },
+    ];
+    try {
+      const afterBest = new Chess(fen);
+      afterBest.move(pvMove.san);
+      const replies = afterBest.moves({ verbose: true });
+      if (replies.length > 0) {
+        const r = replies[0];
+        pvMoves.push({
+          uci: r.from + r.to + (r.promotion ?? ""),
+          san: r.san,
+          evalAfter: { type: "unknown" },
+        });
+      }
+    } catch {
+      // Best move was terminal; single-move PV is acceptable.
     }
 
     const root: AnalysisRoot = {
@@ -117,7 +140,7 @@ class MockEngine implements EngineLayer {
       rootEval,
       depth: 10,
       stability: "stable",
-      moves: [{ uci: pvMove.uci, san: pvMove.san, evalAfter: { type: "unknown" } }],
+      moves: pvMoves,
       createdAt: Date.now(),
     };
     return { root, pv };
@@ -131,17 +154,35 @@ class MockEngine implements EngineLayer {
 // ═══════════════════════════════════════════════════════════
 
 function makeExplainedOutput(ply: number): ExplanationOutput {
+  const proof = {
+    kind: "mechanical" as const,
+    rule: "LEGAL_MOVE" as const,
+    squares: ["e2", "e4"],
+    pieces: ["P"],
+  };
+  const rootCause = {
+    id: `mate_delivered_${ply}`,
+    kind: "state_fact" as const,
+    confidence: "verified" as const,
+    positionRef: "FEN",
+    moveRef: null,
+    proofs: [proof],
+  };
+  const consequence = {
+    id: `mate_delivered_game_over_${ply}`,
+    kind: "consequence" as const,
+    confidence: "verified" as const,
+    positionRef: "FEN",
+    moveRef: null,
+    proofs: [proof],
+  };
   return {
     status: "explained",
     primary: {
-      rootCause: {
-        id: `mate_delivered_${ply}`,
-        kind: "state_fact", confidence: "verified",
-        positionRef: "FEN", moveRef: null,
-        proofs: [{ kind: "mechanical", rule: "LEGAL_MOVE",
-                   squares: ["e2", "e4"], pieces: ["P"] }],
-      },
-      causalChain: [], supportingEvidence: [], confidence: "verified",
+      rootCause,
+      causalChain: [{ mechanism: rootCause, consequence }],
+      supportingEvidence: [],
+      confidence: "verified",
     },
     secondary: [],
   };
@@ -218,7 +259,7 @@ test("analyze_game_mock_terminal_final_move_classified", async () => {
 });
 
 // ─── Test 9: explanations/refutations empty ────────────
-test("analyze_game_mock_explanations_populated_refutations_valid", async () => {
+test("analyze_game_mock_explanations_populated", async () => {
   // Stage 5 Day 2: explanations are populated (Stage 4 scope removed).
   const engine = new MockEngine();
   const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
@@ -240,6 +281,34 @@ test("analyze_game_mock_explanations_populated_refutations_valid", async () => {
     assert.ok(ref.sourcedFromPvId.length > 0);
   }
 });
+
+test("pipeline_produces_refutation_for_blunder", async () => {
+  // Configure MockEngine so ply 1 (e4) has:
+  //   pre-search (idx 0): cp 200
+  //   post-search (idx 1): cp -300
+  // => cpLoss = 500 → Blunder.
+  const engine = new MockEngine({ cpBySearchIdx: { 0: 200, 1: -300 } });
+  const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+
+  const m1 = result.moves.find((m) => m.ply === 1);
+  assert.ok(m1, "ply 1 move missing");
+  assert.ok(
+    m1!.quality === "Blunder" || m1!.quality === "Mistake",
+    `expected Blunder/Mistake at ply 1, got ${m1!.quality}`,
+  );
+
+  assert.ok(
+    result.refutations.size > 0,
+    `expected refutations populated, got ${result.refutations.size}`,
+  );
+  assert.ok(result.refutations.has(1), "expected refutation at ply 1");
+  const ref = result.refutations.get(1)!;
+  assert.equal(ref.mode.kind, "alternative");
+  assert.equal(ref.state.kind, "evaluation_swing_demonstrated");
+  assert.ok(ref.moves.length >= 2, "expected best + reply in refutation moves");
+  assert.ok(ref.sourcedFromPvId.length > 0);
+});
+
 
 // ─── Test 10: budgetOverride respected ─────────────────
 test("analyze_game_mock_budget_override", async () => {

@@ -1015,6 +1015,16 @@ export function validateRefutationLine(
     if (line.state.threatPly >= line.moves.length)
       throw new ContractViolation("RefutationLine", "threatPly out of range");
   }
+
+  if (line.state.kind === "evaluation_swing_demonstrated") {
+    if (!Number.isFinite(line.state.cpGap) || line.state.cpGap <= 0)
+      throw new ContractViolation("RefutationLine", "cpGap must be finite > 0");
+    if (line.moves.length < 2)
+      throw new ContractViolation(
+        "RefutationLine",
+        "evaluation_swing_demonstrated requires >= 2 plies (best move + reply)",
+      );
+  }
 }
 
 export function validateExpectedScore(es: ExpectedScore): void {

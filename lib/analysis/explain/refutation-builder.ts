@@ -1,19 +1,22 @@
 // lib/analysis/explain/refutation-builder.ts
 //
-// Stage 5 Day 5: build RefutationLine for Mistake/Blunder plies.
+// Stage 5 Day 5 — build RefutationLine for Mistake/Blunder plies.
 //
-// For each such ply N:
-//   prePvId = plyToPrePvId.get(N)     (recorded by pipeline.ts)
-//   pv      = game.pvs.get(prePvId)
-//   best    = pv.moves[0]
-//   reply   = pv.moves[1]
-//   state:
-//     consequence_demonstrated  iff pv has >=2 moves AND the |CP gap|
-//                               between pv's last evalAfter and the
-//                               played move's evaluation is >= 300.
-//     insufficient(reason)      otherwise.
+// Evidence source (post-review): the real Stockfish adapter does not
+// supply per-move PV evaluations (`evalAfter: unknown`). We therefore
+// use only evaluations that ARE available:
+//   - pv.rootEval          : eval of the pre-move position (white POV)
+//   - classified.evaluation: eval after the played move (white POV)
+// The |difference| is the cp loss from the mover's perspective.
 //
-// No engine search. No synthesis. All data verified by earlier layers.
+// Only STABLE PVs are used. Unstable PVs → insufficient(unstable).
+// Mate evaluations are not converted to CP; a mate-for-mover on the
+// best line is reported as insufficient(search_failed) — that case is
+// already covered by the MISSED_MATE explanation. A mate or terminal
+// on the played side is also insufficient(search_failed).
+//
+// Consequence is declared via `evaluation_swing_demonstrated` with the
+// CP gap. No material-loss claim is made at this stage.
 
 import type {
   AnalyzedGame,
@@ -29,33 +32,36 @@ function isMistakeOrBlunder(m: ClassifiedMove): boolean {
   return m.quality === "Mistake" || m.quality === "Blunder";
 }
 
-function evalGapCp(played: ClassifiedMove, pv: PVRecord): number | null {
-  const playedEval = played.evaluation;
-  if (playedEval.type === "terminal" && playedEval.kind === "checkmate") return null;
-  if (playedEval.type === "mate") return null;
-  const last = pv.moves[pv.moves.length - 1];
-  if (!last) return null;
-  const bestEval = last.evalAfter;
-  if (bestEval.type === "mate") return 10000;
-  if (bestEval.type !== "cp" || playedEval.type !== "cp") return null;
-  return Math.abs(bestEval.value - playedEval.value);
-}
+function computeState(
+  pv: PVRecord,
+  played: ClassifiedMove,
+): LineState {
+  // Stability check first — unstable evidence cannot become verified.
+  if (pv.stability !== "stable") {
+    return { kind: "insufficient", reason: "unstable" };
+  }
 
-function buildState(pv: PVRecord, played: ClassifiedMove): LineState {
+  // Rendering requires at least best move + reply.
   if (pv.moves.length < 2) {
     return { kind: "insufficient", reason: "pv_too_short" };
   }
-  const gap = evalGapCp(played, pv);
-  if (gap === null) {
+
+  // Both sides of the comparison must be CP. Mate/terminal is delegated
+  // to the explanation layer (MISSED_MATE etc.) — do not synthesize CP.
+  if (pv.rootEval.type !== "cp") {
     return { kind: "insufficient", reason: "search_failed" };
   }
-  if (gap < MIN_CP_SWING) {
-    return { kind: "insufficient", reason: "pv_too_short" };
+  const playedEval = played.evaluation;
+  if (playedEval.type !== "cp") {
+    return { kind: "insufficient", reason: "search_failed" };
   }
-  // NOTE: lostMaterial carries the CP gap, not material units. The field
-  // is named "lostMaterial" but the type accepts any positive finite
-  // number. For Stage 5 Day 5, CP gap is the concrete measure available.
-  return { kind: "consequence_demonstrated", lostMaterial: gap, atPly: 1 };
+
+  const gap = Math.abs(pv.rootEval.value - playedEval.value);
+  if (gap < MIN_CP_SWING) {
+    return { kind: "insufficient", reason: "search_failed" };
+  }
+
+  return { kind: "evaluation_swing_demonstrated", cpGap: gap };
 }
 
 export function buildRefutations(
@@ -71,7 +77,7 @@ export function buildRefutations(
     if (!pv || pv.moves.length === 0) continue;
     result.set(move.ply, {
       mode: { kind: "alternative", targetMove: "missed" },
-      state: buildState(pv, move),
+      state: computeState(pv, move),
       moves: pv.moves.slice(0, 3),
       rootId: pv.rootId,
       sourcedFromPvId: pv.id,

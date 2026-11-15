@@ -390,6 +390,16 @@ export type LineState =
       readonly threatPly: number;
     }
   | {
+      /**
+       * The played move produced a worse engine evaluation than the best
+       * alternative by `cpGap` centipawns. Distinct from
+       * `consequence_demonstrated` because no material loss was proven —
+       * only an evaluation difference. CP values, not material units.
+       */
+      readonly kind: "evaluation_swing_demonstrated";
+      readonly cpGap: number;
+    }
+  | {
       readonly kind: "insufficient";
       readonly reason: "pv_too_short" | "unstable" | "search_failed";
     };
