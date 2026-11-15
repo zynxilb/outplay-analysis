@@ -7,7 +7,7 @@ import type { AnalyzedGame } from "@/lib/analysis/core/types";
 import { ANALYSIS_CONFIG } from "./config";
 import { ImportView } from "@/components/analyze/ImportView";
 import { AnalyzingView } from "@/components/analyze/AnalyzingView";
-import { ReviewView } from "@/components/analyze/ReviewView";
+import { AnalysisViewPro } from "@/components/analyze/pro/AnalysisViewPro";
 
 type Phase =
   | { kind: "import" }
@@ -113,7 +113,7 @@ export default function AnalyzePage() {
         )}
 
         {phase.kind === "review" && (
-          <ReviewView game={phase.game} pgn={phase.pgn} onReset={reset} />
+          <AnalysisViewPro game={phase.game} pgn={phase.pgn} onReset={reset} />
         )}
 
         {phase.kind === "error" && (
