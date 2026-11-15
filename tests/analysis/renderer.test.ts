@@ -126,6 +126,7 @@ function makeGame(overrides: {
     pvs: new Map((overrides.pvs ?? []).map((p) => [p.id, p])),
     moves: overrides.moves ?? [],
     explanations: new Map(),
+    localizedExplanations: new Map(),
     refutations: new Map(),
     config: VALID_ANALYSIS_CONFIG,
   };

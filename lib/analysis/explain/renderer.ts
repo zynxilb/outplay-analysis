@@ -26,19 +26,15 @@ import type {
   EvidenceGraph,
   EvidenceNode,
   ExplanationOutput,
+  LocalizedExplanation,
   PlannedExplanation,
   ProofEngine,
+  TemplateId,
 } from "../core/types.ts";
 
-// ─── Public types ────────────────────────────────────────
-
-export type TemplateId = "MATE_DELIVERED" | "MISSED_MATE";
-
-export interface LocalizedExplanation {
-  readonly text: string;
-  readonly templateId: TemplateId;
-  readonly confidence: "verified" | "supported";
-}
+// Re-export for backward compatibility. New code should import directly
+// from "../core/types.ts".
+export type { LocalizedExplanation, TemplateId } from "../core/types.ts";
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -171,8 +167,10 @@ const TEMPLATES: Record<
 /**
  * Localize a validated explanation into Arabic.
  *
- * PRECONDITION: `output` must be the result of `planExplanations()`, or
- * must otherwise have passed `validatePlannedExplanation(output, graph)`.
+ * PRECONDITION: When `output.status === "explained"`, `output.primary`
+ * must be a `PlannedExplanation` returned through `planExplanations()`,
+ * or must independently have passed
+ * `validatePlannedExplanation(output.primary, graph)`.
  * This function does not re-verify causal connectivity — that is the
  * planner's job. It only enforces template-level requirements (chain
  * length, exact IDs, required ProofEngine / PV / classified move).

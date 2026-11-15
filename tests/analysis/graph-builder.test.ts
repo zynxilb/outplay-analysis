@@ -98,7 +98,7 @@ function makeGame(overrides: Partial<AnalyzedGame> = {}): AnalyzedGame {
     roots: new Map(),
     pvs: new Map(),
     moves: [],
-    explanations: new Map(),
+    explanations: new Map(), localizedExplanations: new Map(),
     refutations: new Map(),
     config: CONFIG,
     ...overrides,

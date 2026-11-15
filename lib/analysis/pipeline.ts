@@ -21,7 +21,9 @@ import type {
   AnalysisFailure,
   AnalysisRoot,
   ClassifiedMove,
+  EvidenceGraph,
   ExplanationOutput,
+  LocalizedExplanation,
   PVRecord,
   RulesSourcedEvaluation,
   SourcedEvaluation,
@@ -30,12 +32,14 @@ import type {
   ClassificationInput,
 } from "./core/types.ts";
 import {
+  ContractViolation,
   validateAnalysisConfig,
   validateComparisonCompatibility,
   validateRulesSourcedEvaluation,
   type EngineLayer,
   type ValidationContext,
 } from "./core/contracts.ts";
+import { renderExplanation } from "./explain/renderer.ts";
 import { extractFacts, type EvidenceFact } from "./explain/evidence-providers.ts";
 import { buildEvidenceGraph } from "./explain/graph-builder.ts";
 import { planExplanations } from "./explain/planner.ts";
@@ -184,6 +188,54 @@ async function runSearchWithCancellation(
   } finally {
     signal.removeEventListener("abort", abortHandler);
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Localization loop
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Function shape accepted by `localizeAll`. Matches `renderExplanation`.
+ * Exported so tests can substitute a stub without expanding the public
+ * `AnalyzeOptions` API.
+ */
+export type RendererFn = (
+  output: ExplanationOutput,
+  graph: EvidenceGraph,
+  game: AnalyzedGame,
+  ply: number,
+) => LocalizedExplanation | null;
+
+/**
+ * Localize every explained ply. Records template-level `ContractViolation`
+ * (a planner bug) as an `"explanation"` failure at the offending ply and
+ * skips that ply; other plies continue. Any other error is rethrown so
+ * the caller can decide how to record it.
+ *
+ * Exported for testing only — production code uses `renderExplanation`
+ * via `analyzeGame`.
+ */
+export function localizeAll(
+  explanations: ReadonlyMap<number, ExplanationOutput>,
+  graph: EvidenceGraph,
+  game: AnalyzedGame,
+  render: RendererFn,
+  failures: AnalysisFailure[],
+): Map<number, LocalizedExplanation> {
+  const result = new Map<number, LocalizedExplanation>();
+  for (const [ply, output] of explanations) {
+    try {
+      const localized = render(output, graph, game, ply);
+      if (localized !== null) result.set(ply, localized);
+    } catch (e) {
+      if (e instanceof ContractViolation) {
+        failures.push({ ply, stage: "explanation", reason: e.detail });
+      } else {
+        throw e;
+      }
+    }
+  }
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -454,16 +506,20 @@ export async function analyzeGame(
     // Build evidence graph + plan explanations (Stage 5 Day 2).
     // Any failure here becomes a ply-0 "explanation" failure, not fatal.
     const explanations = new Map<number, ExplanationOutput>();
+    let graph: EvidenceGraph | null = null;
+    let graphGame: AnalyzedGame | null = null;
     if (allFacts.length > 0) {
       try {
         const preGraphStatus: "complete" | "partial" =
           failures.length === 0 ? "complete" : "partial";
-        const tempGame: AnalyzedGame = {
+        graphGame = {
           pgn, status: preGraphStatus,
           failures, roots, pvs, moves,
-          explanations: new Map(), refutations: new Map(), config,
+          explanations: new Map(),
+          localizedExplanations: new Map(),
+          refutations: new Map(), config,
         };
-        const graph = buildEvidenceGraph(allFacts, tempGame);
+        graph = buildEvidenceGraph(allFacts, graphGame);
         const planned = planExplanations(graph);
         for (const [ply, exp] of planned) explanations.set(ply, exp);
       } catch (e) {
@@ -475,10 +531,33 @@ export async function analyzeGame(
       }
     }
 
+    // Day 4 — Arabic localization of validated explanations.
+    // Per-ply ContractViolation is recorded at that ply by localizeAll.
+    // Unexpected errors from the renderer are recorded as a ply-0
+    // "explanation" failure (never thrown to the caller).
+    let localizedExplanations = new Map<number, LocalizedExplanation>();
+    if (graph !== null && graphGame !== null) {
+      try {
+        localizedExplanations = localizeAll(
+          explanations,
+          graph,
+          graphGame,
+          renderExplanation,
+          failures,
+        );
+      } catch (e) {
+        failures.push({
+          ply: 0,
+          stage: "explanation",
+          reason: `Localization failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+
     const status = failures.length === 0 ? "complete" : "partial";
     return {
       pgn, status, failures, roots, pvs, moves,
-      explanations, refutations: new Map(), config,
+      explanations, localizedExplanations, refutations: new Map(), config,
     };
   } finally {
     if (ownsEngine) {
@@ -500,6 +579,7 @@ function emptyResult(
     pvs: new Map(),
     moves: [],
     explanations: new Map(),
+    localizedExplanations: new Map(),
     refutations: new Map(),
     config,
   };

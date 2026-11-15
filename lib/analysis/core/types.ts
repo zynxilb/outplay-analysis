@@ -355,6 +355,22 @@ export type ExplanationOutput =
       readonly reason: ExplanationSilenceReason;
     };
 
+// ─── Localization ─────────────────────────────────────
+
+export type TemplateId = "MATE_DELIVERED" | "MISSED_MATE";
+
+/**
+ * Arabic-rendered form of a validated PlannedExplanation.
+ * Never carries chess facts beyond what the plan's evidence supports.
+ * The `confidence` field is copied verbatim from the plan — the
+ * renderer must not strengthen it.
+ */
+export interface LocalizedExplanation {
+  readonly text: string;
+  readonly templateId: TemplateId;
+  readonly confidence: "verified" | "supported";
+}
+
 // ─── Refutation ───────────────────────────────────────
 
 export type LineMode =
@@ -435,6 +451,14 @@ export interface AnalyzedGame {
   readonly pvs: ReadonlyMap<string, PVRecord>;
   readonly moves: readonly ClassifiedMove[];
   readonly explanations: ReadonlyMap<number, ExplanationOutput>;
+  /**
+   * Arabic renderings of `explanations`, keyed by ply.
+   * SPARSE: only successfully localized plies are present. A missing
+   * entry may mean the explanation was silent, unsupported, or failed
+   * localization (see `failures[]` with stage "explanation").
+   * The canonical `explanations` map remains the source of truth.
+   */
+  readonly localizedExplanations: ReadonlyMap<number, LocalizedExplanation>;
   readonly refutations: ReadonlyMap<number, RefutationLine>;
   readonly config: AnalysisConfig;
 }

@@ -7,15 +7,22 @@ import assert from "node:assert/strict";
 import {
   replayPgn,
   analyzeGame,
+  localizeAll,
+  type RendererFn,
 } from "../../lib/analysis/pipeline.ts";
 import type {
   AnalysisConfig,
+  AnalysisFailure,
   AnalysisRoot,
+  AnalyzedGame,
+  EvidenceGraph,
+  ExplanationOutput,
   PVRecord,
   SearchBudget,
   AnalysisPurpose,
   Evaluation,
 } from "../../lib/analysis/core/types.ts";
+import { ContractViolation } from "../../lib/analysis/core/contracts.ts";
 import type { EngineLayer } from "../../lib/analysis/core/contracts.ts";
 import { Chess } from "chess.js";
 import { computeConfigHash } from "../../lib/analysis/core/contracts.ts";
@@ -500,4 +507,123 @@ test("analyze_game_explanations_empty_when_no_facts", async () => {
   // No mate delivered, no missed mate, engine_preferred might fire but
   // doesn't produce explanations. So explanations should be empty.
   assert.equal(result.explanations.size, 0);
+});
+
+
+// ═══════════════════════════════════════════════════════════
+// Stage 5 Day 4 — Arabic localization in the pipeline
+// ═══════════════════════════════════════════════════════════
+
+test("pipeline_localizes_mate_delivered_at_ply_33", async () => {
+  const engine = new MockEngine();
+  const game = await analyzeGame(OPERA_PGN, CONFIG, { engine });
+
+  // The Opera Game ends with 17.Rd8# (ply 33).
+  const localized = game.localizedExplanations.get(33);
+  assert.ok(localized, "localizedExplanations must contain ply 33");
+  assert.equal(localized.templateId, "MATE_DELIVERED");
+  assert.equal(localized.confidence, "verified");
+  assert.ok(
+    localized.text.includes("Rd8"),
+    `text must mention Rd8: got "${localized.text}"`,
+  );
+  assert.ok(
+    localized.text.startsWith("كش مات!"),
+    `text must start with "كش مات!": got "${localized.text}"`,
+  );
+
+  // No explanation-stage failures should have occurred.
+  const explFailures = game.failures.filter((f) => f.stage === "explanation");
+  assert.equal(
+    explFailures.length,
+    0,
+    `unexpected explanation failures: ${JSON.stringify(explFailures)}`,
+  );
+});
+
+test("pipeline_localize_records_contract_violation_and_continues", () => {
+  const failures: AnalysisFailure[] = [];
+  const dummy: ExplanationOutput = { status: "silent", reason: "NO_CAUSE_FOUND" };
+  const explanations = new Map<number, ExplanationOutput>([
+    [33, dummy],
+    [17, dummy],
+  ]);
+  const graph: EvidenceGraph = {
+    nodes: new Map(),
+    causalEdges: [],
+    metadata: { duplicates: [], sharedRoots: [] },
+    rootPositionFen: "",
+    analysisComplete: true,
+  };
+  const game: AnalyzedGame = {
+    pgn: "",
+    status: "complete",
+    failures: [],
+    roots: new Map(),
+    pvs: new Map(),
+    moves: [],
+    explanations: new Map(),
+    localizedExplanations: new Map(),
+    refutations: new Map(),
+    config: CONFIG,
+  };
+
+  const stub: RendererFn = (_output, _graph, _game, ply) => {
+    if (ply === 33) {
+      throw new ContractViolation("renderer", "test-forced");
+    }
+    return {
+      text: "ok",
+      templateId: "MATE_DELIVERED",
+      confidence: "verified",
+    };
+  };
+
+  const result = localizeAll(explanations, graph, game, stub, failures);
+
+  assert.equal(result.has(33), false, "failed ply must be absent");
+  assert.equal(result.has(17), true, "other ply must succeed");
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].ply, 33);
+  assert.equal(failures[0].stage, "explanation");
+  assert.equal(failures[0].reason, "test-forced");
+});
+
+test("pipeline_localize_rethrows_non_contract_violation", () => {
+  const failures: AnalysisFailure[] = [];
+  const dummy: ExplanationOutput = { status: "silent", reason: "NO_CAUSE_FOUND" };
+  const explanations = new Map<number, ExplanationOutput>([[33, dummy]]);
+  const graph: EvidenceGraph = {
+    nodes: new Map(),
+    causalEdges: [],
+    metadata: { duplicates: [], sharedRoots: [] },
+    rootPositionFen: "",
+    analysisComplete: true,
+  };
+  const game: AnalyzedGame = {
+    pgn: "",
+    status: "complete",
+    failures: [],
+    roots: new Map(),
+    pvs: new Map(),
+    moves: [],
+    explanations: new Map(),
+    localizedExplanations: new Map(),
+    refutations: new Map(),
+    config: CONFIG,
+  };
+
+  const stub: RendererFn = () => {
+    throw new Error("unexpected-boom");
+  };
+
+  assert.throws(
+    () => localizeAll(explanations, graph, game, stub, failures),
+    /unexpected-boom/,
+  );
+  assert.equal(
+    failures.length,
+    0,
+    "non-ContractViolation must propagate without being recorded",
+  );
 });
