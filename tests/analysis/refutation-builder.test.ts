@@ -22,6 +22,26 @@ function move(
   };
 }
 
+// Consistent SAN → UCI mapping so fixtures don't mix a "Nf3" SAN with
+// an "e2e4" UCI (which describes a different move). Values are real
+// standard chess UCI for those SANs.
+const SAN_TO_UCI: Record<string, string> = {
+  "Nf3": "g1f3",
+  "Nc3": "b1c3",
+  "e4": "e2e4",
+  "d4": "d2d4",
+  "e5": "e7e5",
+  "d5": "d7d5",
+  "Qa2": "d1a2",
+  "Ra2": "a1a2",
+};
+
+function uciFor(san: string): string {
+  const u = SAN_TO_UCI[san];
+  if (!u) throw new Error(`test fixture: no UCI mapping for SAN "${san}"`);
+  return u;
+}
+
 function makePv(
   id: string,
   rootId: string,
@@ -35,8 +55,8 @@ function makePv(
     rootEval: { type: "cp", value: rootEvalCp },
     depth: 10, stability,
     moves: [
-      { uci: "e2e4", san: bestSan, evalAfter: { type: "unknown" } },
-      { uci: "e7e5", san: replySan, evalAfter: { type: "unknown" } },
+      { uci: uciFor(bestSan), san: bestSan, evalAfter: { type: "unknown" } },
+      { uci: uciFor(replySan), san: replySan, evalAfter: { type: "unknown" } },
     ],
     createdAt: 1,
   };
@@ -55,7 +75,6 @@ function makeGame(moves: ClassifiedMove[], pvs: PVRecord[]): AnalyzedGame {
 // ── State computation ────────────────────────────────────
 
 test("refutation_builder_produces_evaluation_swing_for_blunder", () => {
-  // pv.rootEval = 200; played.evaluation = -300 ⇒ gap 500 ≥ 300.
   const pvs = [makePv("pv1", "r1", "Nf3", "e5", 200)];
   const g = makeGame([move(1, "d4", "Blunder", -300)], pvs);
   const out = buildRefutations(g, new Map([[1, "pv1"]]));
@@ -103,7 +122,6 @@ test("refutation_builder_rejects_unstable_pv", () => {
   const pvs = [makePv("pv1", "r1", "Nf3", "e5", 200, "unstable")];
   const g = makeGame([move(1, "d4", "Blunder", -300)], pvs);
   const out = buildRefutations(g, new Map([[1, "pv1"]]));
-  assert.equal(out.size, 1);
   assert.equal(out.get(1)!.state.kind, "insufficient");
   if (out.get(1)!.state.kind === "insufficient") {
     assert.equal(out.get(1)!.state.reason, "unstable");
@@ -116,7 +134,7 @@ test("refutation_builder_rejects_mate_root_eval", () => {
     rootEval: { type: "mate", in: 2, winner: "white" },
     depth: 10, stability: "stable",
     moves: [
-      { uci: "e2e4", san: "Nf3", evalAfter: { type: "unknown" } },
+      { uci: "g1f3", san: "Nf3", evalAfter: { type: "unknown" } },
       { uci: "e7e5", san: "e5", evalAfter: { type: "unknown" } },
     ],
     createdAt: 1,
@@ -149,6 +167,23 @@ test("refutation_builder_rejects_below_threshold_gap", () => {
   const g = makeGame([move(1, "d4", "Blunder", -50)], pvs);
   const out = buildRefutations(g, new Map([[1, "pv1"]]));
   assert.equal(out.get(1)!.state.kind, "insufficient");
+  if (out.get(1)!.state.kind === "insufficient") {
+    assert.equal(out.get(1)!.state.reason, "evaluation_swing_below_threshold");
+  }
+});
+
+test("refutation_builder_refuses_when_best_equals_played", () => {
+  // If the pre-move PV's head IS the move that was played, we cannot
+  // claim the player missed their own move. Builder must yield
+  // insufficient(search_failed) rather than emit a lying refutation.
+  const pvs = [makePv("pv1", "r1", "d4", "d5", 200)];
+  const g = makeGame([move(1, "d4", "Blunder", -300)], pvs);
+  const out = buildRefutations(g, new Map([[1, "pv1"]]));
+  assert.equal(out.size, 1);
+  assert.equal(out.get(1)!.state.kind, "insufficient");
+  if (out.get(1)!.state.kind === "insufficient") {
+    assert.equal(out.get(1)!.state.reason, "search_failed");
+  }
 });
 
 // ── Arabic renderer ──────────────────────────────────────
@@ -157,6 +192,24 @@ test("refutation_ar_renders_evaluation_swing_sentence", () => {
   const line: RefutationLine = {
     mode: { kind: "alternative", targetMove: "missed" },
     state: { kind: "evaluation_swing_demonstrated", cpGap: 500 },
+    moves: [
+      { uci: "g1f3", san: "Nf3", evalAfter: { type: "unknown" } },
+      { uci: "e7e5", san: "e5", evalAfter: { type: "unknown" } },
+    ],
+    rootId: "r1", sourcedFromPvId: "pv1", sourcedFromDepth: 10,
+  };
+  const out = renderRefutation(line);
+  assert.ok(out);
+  assert.equal(out!.text, "الأفضل كان Nf3. كان الخصم سيرد بـ e5.");
+  assert.equal(out!.confidence, "verified");
+});
+
+test("refutation_ar_renders_consequence_demonstrated_sentence", () => {
+  // Legacy variant — must still render with the SAME visible template.
+  // This preserves the pre-Day-5 wording contract.
+  const line: RefutationLine = {
+    mode: { kind: "alternative", targetMove: "missed" },
+    state: { kind: "consequence_demonstrated", lostMaterial: 300, atPly: 1 },
     moves: [
       { uci: "g1f3", san: "Nf3", evalAfter: { type: "unknown" } },
       { uci: "e7e5", san: "e5", evalAfter: { type: "unknown" } },

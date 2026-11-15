@@ -46,6 +46,15 @@ function computeState(
     return { kind: "insufficient", reason: "pv_too_short" };
   }
 
+  // Contradiction guard: a refutation must propose a DIFFERENT move
+  // than the one the player made. If the pre-move PV's head matches
+  // the played move, either the pipeline provided a post-move PV by
+  // mistake or the search data is inconsistent — either way, we cannot
+  // claim the player missed their own move.
+  if (pv.moves[0].san === played.san) {
+    return { kind: "insufficient", reason: "search_failed" };
+  }
+
   // Both sides of the comparison must be CP. Mate/terminal is delegated
   // to the explanation layer (MISSED_MATE etc.) — do not synthesize CP.
   if (pv.rootEval.type !== "cp") {
@@ -58,7 +67,7 @@ function computeState(
 
   const gap = Math.abs(pv.rootEval.value - playedEval.value);
   if (gap < MIN_CP_SWING) {
-    return { kind: "insufficient", reason: "search_failed" };
+    return { kind: "insufficient", reason: "evaluation_swing_below_threshold" };
   }
 
   return { kind: "evaluation_swing_demonstrated", cpGap: gap };

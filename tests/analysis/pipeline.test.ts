@@ -15,14 +15,16 @@ import type {
   AnalysisFailure,
   AnalysisRoot,
   AnalyzedGame,
+  CausalEdge,
   EvidenceGraph,
+  EvidenceNode,
   ExplanationOutput,
   PVRecord,
   SearchBudget,
   AnalysisPurpose,
   Evaluation,
 } from "../../lib/analysis/core/types.ts";
-import { ContractViolation } from "../../lib/analysis/core/contracts.ts";
+import { ContractViolation, validatePlannedExplanation } from "../../lib/analysis/core/contracts.ts";
 import type { EngineLayer } from "../../lib/analysis/core/contracts.ts";
 import { Chess } from "chess.js";
 import { computeConfigHash } from "../../lib/analysis/core/contracts.ts";
@@ -48,6 +50,11 @@ interface MockOptions {
   readonly cpValue?: number;
   /** Per-search-index cp value. Overrides `cpValue` for those indices. */
   readonly cpBySearchIdx?: Readonly<Record<number, number>>;
+  /** Per-search-index SAN of the engine's "best" move. When set, the
+   *  mock will use this move (if legal) instead of its mate-in-1 scan
+   *  or its default e2e4. Used to prove refutations propose a
+   *  different move than the one played. */
+  readonly forcedBestSanByIdx?: Readonly<Record<number, string>>;
 }
 
 class MockEngine implements EngineLayer {
@@ -88,6 +95,7 @@ class MockEngine implements EngineLayer {
 
     let rootEval: Evaluation = { type: "cp", value: cp };
     let pvMove = { uci: "e2e4", san: "e4" };
+    let usedMate = false;
 
     for (const m of legalMoves) {
       chess.move(m.san);
@@ -100,7 +108,18 @@ class MockEngine implements EngineLayer {
           winner: mover === "w" ? "white" : "black",
         };
         pvMove = { uci: m.from + m.to + (m.promotion ?? ""), san: m.san };
+        usedMate = true;
         break;
+      }
+    }
+
+    // Force a specific best SAN for this search index (overrides the
+    // default e2e4 fallback, but never overrides mate-in-1 detection).
+    const forcedSan = this.opts.forcedBestSanByIdx?.[idx];
+    if (!usedMate && forcedSan) {
+      const forced = legalMoves.find((m) => m.san === forcedSan);
+      if (forced) {
+        pvMove = { uci: forced.from + forced.to + (forced.promotion ?? ""), san: forced.san };
       }
     }
 
@@ -185,6 +204,52 @@ function makeExplainedOutput(ply: number): ExplanationOutput {
       confidence: "verified",
     },
     secondary: [],
+  };
+}
+
+/**
+ * Build an EvidenceGraph consistent with makeExplainedOutput(ply):
+ * contains the rootCause (mate_delivered_<ply>), the consequence
+ * (mate_delivered_game_over_<ply>), and one "causes" edge.
+ * This graph passes validatePlannedExplanation for the plan returned
+ * by makeExplainedOutput.
+ */
+function makeValidGraph(ply: number): EvidenceGraph {
+  const proof = {
+    kind: "mechanical" as const,
+    rule: "LEGAL_MOVE" as const,
+    squares: ["e2", "e4"],
+    pieces: ["P"],
+  };
+  const rootCause: EvidenceNode = {
+    id: `mate_delivered_${ply}`,
+    kind: "state_fact",
+    confidence: "verified",
+    positionRef: "FEN",
+    moveRef: null,
+    proofs: [proof],
+  };
+  const consequence: EvidenceNode = {
+    id: `mate_delivered_game_over_${ply}`,
+    kind: "consequence",
+    confidence: "verified",
+    positionRef: "FEN",
+    moveRef: null,
+    proofs: [proof],
+  };
+  const edge: CausalEdge = {
+    id: `edge-mate-${ply}`,
+    from: rootCause.id,
+    to: consequence.id,
+    type: "causes",
+    proof,
+  };
+  return {
+    nodes: new Map([[rootCause.id, rootCause], [consequence.id, consequence]]),
+    causalEdges: [edge],
+    metadata: { duplicates: [], sharedRoots: [] },
+    rootPositionFen: "FEN",
+    analysisComplete: true,
   };
 }
 
@@ -283,15 +348,20 @@ test("analyze_game_mock_explanations_populated", async () => {
 });
 
 test("pipeline_produces_refutation_for_blunder", async () => {
-  // Configure MockEngine so ply 1 (e4) has:
-  //   pre-search (idx 0): cp 200
-  //   post-search (idx 1): cp -300
-  // => cpLoss = 500 → Blunder.
-  const engine = new MockEngine({ cpBySearchIdx: { 0: 200, 1: -300 } });
+  // Force the mock to propose 1.d4 as the best move at ply 1's pre-search.
+  // The player actually played 1.e4. Gap:
+  //   pre-search (idx 0): cp 200 (from d4)
+  //   post-search (idx 1): cp -300 (after e4)
+  // => |gap| = 500 ≥ 300, and Blunder at ply 1.
+  const engine = new MockEngine({
+    cpBySearchIdx: { 0: 200, 1: -300 },
+    forcedBestSanByIdx: { 0: "d4" },
+  });
   const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
 
   const m1 = result.moves.find((m) => m.ply === 1);
   assert.ok(m1, "ply 1 move missing");
+  assert.equal(m1!.san, "e4", "opera game's first move is 1.e4");
   assert.ok(
     m1!.quality === "Blunder" || m1!.quality === "Mistake",
     `expected Blunder/Mistake at ply 1, got ${m1!.quality}`,
@@ -307,6 +377,14 @@ test("pipeline_produces_refutation_for_blunder", async () => {
   assert.equal(ref.state.kind, "evaluation_swing_demonstrated");
   assert.ok(ref.moves.length >= 2, "expected best + reply in refutation moves");
   assert.ok(ref.sourcedFromPvId.length > 0);
+
+  // CRITICAL invariant: the proposed alternative MUST NOT be the move
+  // the player already made. Otherwise the refutation is a lie.
+  assert.notEqual(
+    ref.moves[0].san,
+    m1!.san,
+    `refutation proposes the played move "${m1!.san}" as the alternative`,
+  );
 });
 
 
@@ -650,13 +728,7 @@ test("pipeline_localize_records_contract_violation_and_continues", () => {
     [33, makeExplainedOutput(33)],
     [17, makeExplainedOutput(17)],
   ]);
-  const graph: EvidenceGraph = {
-    nodes: new Map(),
-    causalEdges: [],
-    metadata: { duplicates: [], sharedRoots: [] },
-    rootPositionFen: "",
-    analysisComplete: true,
-  };
+  const graph = makeValidGraph(33);
   const game: AnalyzedGame = {
     pgn: "",
     status: "complete",
@@ -694,13 +766,7 @@ test("pipeline_localize_records_contract_violation_and_continues", () => {
 test("pipeline_localize_rethrows_non_contract_violation", () => {
   const failures: AnalysisFailure[] = [];
   const explanations = new Map<number, ExplanationOutput>([[33, makeExplainedOutput(33)]]);
-  const graph: EvidenceGraph = {
-    nodes: new Map(),
-    causalEdges: [],
-    metadata: { duplicates: [], sharedRoots: [] },
-    rootPositionFen: "",
-    analysisComplete: true,
-  };
+  const graph = makeValidGraph(33);
   const game: AnalyzedGame = {
     pgn: "",
     status: "complete",
@@ -727,4 +793,13 @@ test("pipeline_localize_rethrows_non_contract_violation", () => {
     0,
     "non-ContractViolation must propagate without being recorded",
   );
+});
+
+
+test("makeExplainedOutput_passes_validatePlannedExplanation", () => {
+  // Guard against the fixture drifting away from a planner-valid plan.
+  const out = makeExplainedOutput(33);
+  if (out.status !== "explained") throw new Error("unreachable");
+  const graph = makeValidGraph(33);
+  assert.doesNotThrow(() => validatePlannedExplanation(out.primary, graph));
 });

@@ -401,7 +401,11 @@ export type LineState =
     }
   | {
       readonly kind: "insufficient";
-      readonly reason: "pv_too_short" | "unstable" | "search_failed";
+      readonly reason:
+        | "pv_too_short"
+        | "unstable"
+        | "search_failed"
+        | "evaluation_swing_below_threshold";
     };
 
 export interface RefutationLine {
