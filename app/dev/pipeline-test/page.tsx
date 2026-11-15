@@ -60,9 +60,17 @@ export default function PipelineTestPage() {
         if (cancelled) return;
 
         const lastMove = result.moves[result.moves.length - 1];
+        const localizedList = Array.from(result.localizedExplanations.entries()).map(([ply, loc]) => ({
+          ply,
+          templateId: loc.templateId,
+          headline: loc.headline,
+          detail: loc.detail,
+        }));
         const summary = {
           status: result.status,
           moveCount: result.moves.length,
+          localizedExplanationsCount: result.localizedExplanations.size,
+          localizedExplanations: localizedList,
           firstMoveSan: result.moves[0]?.san ?? null,
           firstMoveQuality: result.moves[0]?.quality ?? null,
           lastMoveSan: lastMove?.san ?? null,

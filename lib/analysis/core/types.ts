@@ -426,6 +426,23 @@ export interface AnalysisFailure {
 
 export type AnalysisStatus = "complete" | "partial";
 
+// ─── Localized explanations (Stage 5 Day 3) ─────────────
+// Arabic rendering of a validated PlannedExplanation.
+// Produced by lib/analysis/explain/localize/ar.ts.
+// Every headline/detail is derived from verified records; if any
+// required data is missing, the localizer returns null (silent).
+
+export type LocalizedTemplateId =
+  | "MATE_DELIVERED"
+  | "MISSED_MATE";
+
+export interface LocalizedExplanation {
+  readonly templateId: LocalizedTemplateId;
+  readonly headline: string;
+  readonly detail: string;
+  readonly ply: number;
+}
+
 export interface AnalyzedGame {
   readonly pgn: string;
   /** "complete" = all moves classified. "partial" = some failed. */
@@ -435,6 +452,7 @@ export interface AnalyzedGame {
   readonly pvs: ReadonlyMap<string, PVRecord>;
   readonly moves: readonly ClassifiedMove[];
   readonly explanations: ReadonlyMap<number, ExplanationOutput>;
+  readonly localizedExplanations: ReadonlyMap<number, LocalizedExplanation>;
   readonly refutations: ReadonlyMap<number, RefutationLine>;
   readonly config: AnalysisConfig;
 }

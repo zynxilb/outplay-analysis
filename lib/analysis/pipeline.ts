@@ -39,6 +39,7 @@ import {
 import { extractFacts, type EvidenceFact } from "./explain/evidence-providers.ts";
 import { buildEvidenceGraph } from "./explain/graph-builder.ts";
 import { planExplanations } from "./explain/planner.ts";
+import { localizeExplanations } from "./explain/localize/ar.ts";
 import { StockfishAdapter } from "./engine/stockfish.ts";
 import { createClassificationLayer } from "./classify/adapter.ts";
 
@@ -451,9 +452,10 @@ export async function analyzeGame(
       prevSearch = postSearch;
     }
 
-    // Build evidence graph + plan explanations (Stage 5 Day 2).
+    // Build evidence graph + plan + localize (Stage 5 Day 2-3).
     // Any failure here becomes a ply-0 "explanation" failure, not fatal.
     const explanations = new Map<number, ExplanationOutput>();
+    const localizedExplanations = new Map<number, import("./core/types.ts").LocalizedExplanation>();
     if (allFacts.length > 0) {
       try {
         const preGraphStatus: "complete" | "partial" =
@@ -461,16 +463,27 @@ export async function analyzeGame(
         const tempGame: AnalyzedGame = {
           pgn, status: preGraphStatus,
           failures, roots, pvs, moves,
-          explanations: new Map(), refutations: new Map(), config,
+          explanations: new Map(),
+          localizedExplanations: new Map(),
+          refutations: new Map(), config,
         };
         const graph = buildEvidenceGraph(allFacts, tempGame);
         const planned = planExplanations(graph);
         for (const [ply, exp] of planned) explanations.set(ply, exp);
+
+        // Localization (Arabic). Uses the same graph + a temp game view
+        // that includes explanations so the localizer can access pvs.
+        const tempGameForLocalize: AnalyzedGame = {
+          ...tempGame,
+          explanations,
+        };
+        const localized = localizeExplanations(explanations, graph, tempGameForLocalize);
+        for (const [ply, loc] of localized) localizedExplanations.set(ply, loc);
       } catch (e) {
         failures.push({
           ply: 0,
           stage: "explanation",
-          reason: `Graph build/plan failed: ${e instanceof Error ? e.message : String(e)}`,
+          reason: `Graph build/plan/localize failed: ${e instanceof Error ? e.message : String(e)}`,
         });
       }
     }
@@ -478,7 +491,8 @@ export async function analyzeGame(
     const status = failures.length === 0 ? "complete" : "partial";
     return {
       pgn, status, failures, roots, pvs, moves,
-      explanations, refutations: new Map(), config,
+      explanations, localizedExplanations,
+      refutations: new Map(), config,
     };
   } finally {
     if (ownsEngine) {
@@ -500,6 +514,7 @@ function emptyResult(
     pvs: new Map(),
     moves: [],
     explanations: new Map(),
+    localizedExplanations: new Map(),
     refutations: new Map(),
     config,
   };

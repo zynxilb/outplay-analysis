@@ -99,6 +99,7 @@ function makeGame(overrides: Partial<AnalyzedGame> = {}): AnalyzedGame {
     pvs: new Map(),
     moves: [],
     explanations: new Map(),
+    localizedExplanations: new Map(),
     refutations: new Map(),
     config: CONFIG,
     ...overrides,
