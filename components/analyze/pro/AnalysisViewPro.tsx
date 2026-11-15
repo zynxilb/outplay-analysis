@@ -596,10 +596,14 @@ export function AnalysisViewPro({
               <button
                 key={ply.plyIndex}
                 onClick={() => goToPly(ply.plyIndex)}
+                title={ply.quality ? QUALITY_META[ply.quality].labelAr : "لم تُحلل هذه النقلة"}
+                aria-label={ply.quality ? QUALITY_META[ply.quality].labelAr : "لم تُحلل هذه النقلة"}
                 className={`shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[11px] font-mono transition-colors ${
                   ply.plyIndex === currentPly
                     ? "bg-[#D84040]/20 border border-[#D84040] text-white"
-                    : "bg-[#1A1E29] border border-white/5 text-slate-300"
+                    : !ply.quality
+                      ? "bg-[#1A1E29]/50 border border-white/5 text-zinc-500 opacity-60"
+                      : "bg-[#1A1E29] border border-white/5 text-slate-300"
                 }`}
               >
                 {ply.quality && <InlineQualityDot quality={ply.quality} />}
@@ -625,6 +629,8 @@ export function AnalysisViewPro({
             <button
               onClick={toggleBestArrow}
               disabled={!hasBest}
+              title={hasBest ? "إظهار أفضل نقلة" : "لا يوجد بديل متاح"}
+              aria-label={hasBest ? "إظهار أفضل نقلة" : "لا يوجد بديل متاح"}
               className={`h-9 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 ${
                 showBestArrow
                   ? "bg-[#10B981]/20 border border-[#10B981]/50 text-[#34D399]"
@@ -636,6 +642,8 @@ export function AnalysisViewPro({
             <button
               onClick={toggleRefutation}
               disabled={!hasRefutation}
+              title={hasRefutation ? (refutationStep !== null ? "إنهاء التفنيد" : "إظهار التفنيد") : "لا يوجد تفنيد متاح"}
+              aria-label={hasRefutation ? (refutationStep !== null ? "إنهاء التفنيد" : "إظهار التفنيد") : "لا يوجد تفنيد متاح"}
               className={`h-9 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 ${
                 refutationStep !== null
                   ? "bg-[#D84040]/20 border border-[#D84040]/50 text-[#FCA5A5]"
