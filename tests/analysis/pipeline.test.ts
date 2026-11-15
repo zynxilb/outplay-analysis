@@ -125,6 +125,28 @@ class MockEngine implements EngineLayer {
 }
 
 // ─── Test 1: replayPgn still works ──────────────────────
+
+// ═══════════════════════════════════════════════════════════
+// Test helpers — synthetic explained outputs
+// ═══════════════════════════════════════════════════════════
+
+function makeExplainedOutput(ply: number): ExplanationOutput {
+  return {
+    status: "explained",
+    primary: {
+      rootCause: {
+        id: `mate_delivered_${ply}`,
+        kind: "state_fact", confidence: "verified",
+        positionRef: "FEN", moveRef: null,
+        proofs: [{ kind: "mechanical", rule: "LEGAL_MOVE",
+                   squares: ["e2", "e4"], pieces: ["P"] }],
+      },
+      causalChain: [], supportingEvidence: [], confidence: "verified",
+    },
+    secondary: [],
+  };
+}
+
 test("replay_pgn_opera_produces_34_states", () => {
   const result = replayPgn(OPERA_PGN);
   assert.equal(result.positions.length, 34);
@@ -196,7 +218,7 @@ test("analyze_game_mock_terminal_final_move_classified", async () => {
 });
 
 // ─── Test 9: explanations/refutations empty ────────────
-test("analyze_game_mock_explanations_populated_refutations_empty", async () => {
+test("analyze_game_mock_explanations_populated_refutations_valid", async () => {
   // Stage 5 Day 2: explanations are populated (Stage 4 scope removed).
   const engine = new MockEngine();
   const result = await analyzeGame(OPERA_PGN, CONFIG, { engine });
@@ -204,7 +226,19 @@ test("analyze_game_mock_explanations_populated_refutations_empty", async () => {
     result.explanations.size > 0,
     `expected explanations.size > 0 (Stage 5 Day 2 scope), got ${result.explanations.size}`,
   );
-  assert.equal(result.refutations.size, 0);
+  // Day 5: refutations are populated for Mistake/Blunder plies.
+  // Verify invariant: each entry corresponds to a valid move and
+  // carries mode 'alternative' with proper PV provenance.
+  for (const [ply, ref] of result.refutations) {
+    const mv = result.moves.find((x) => x.ply === ply);
+    assert.ok(mv, `refutation at ply ${ply} has no matching move`);
+    assert.ok(
+      mv!.quality === "Mistake" || mv!.quality === "Blunder",
+      `refutation attached to ${mv!.quality} ply ${ply}`,
+    );
+    assert.equal(ref.mode.kind, "alternative");
+    assert.ok(ref.sourcedFromPvId.length > 0);
+  }
 });
 
 // ─── Test 10: budgetOverride respected ─────────────────
@@ -543,10 +577,9 @@ test("pipeline_localizes_mate_delivered_at_ply_33", async () => {
 
 test("pipeline_localize_records_contract_violation_and_continues", () => {
   const failures: AnalysisFailure[] = [];
-  const dummy: ExplanationOutput = { status: "silent", reason: "NO_CAUSE_FOUND" };
   const explanations = new Map<number, ExplanationOutput>([
-    [33, dummy],
-    [17, dummy],
+    [33, makeExplainedOutput(33)],
+    [17, makeExplainedOutput(17)],
   ]);
   const graph: EvidenceGraph = {
     nodes: new Map(),
@@ -591,8 +624,7 @@ test("pipeline_localize_records_contract_violation_and_continues", () => {
 
 test("pipeline_localize_rethrows_non_contract_violation", () => {
   const failures: AnalysisFailure[] = [];
-  const dummy: ExplanationOutput = { status: "silent", reason: "NO_CAUSE_FOUND" };
-  const explanations = new Map<number, ExplanationOutput>([[33, dummy]]);
+  const explanations = new Map<number, ExplanationOutput>([[33, makeExplainedOutput(33)]]);
   const graph: EvidenceGraph = {
     nodes: new Map(),
     causalEdges: [],

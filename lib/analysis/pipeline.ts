@@ -25,6 +25,7 @@ import type {
   ExplanationOutput,
   LocalizedExplanation,
   PVRecord,
+  RefutationLine,
   RulesSourcedEvaluation,
   SourcedEvaluation,
   TerminalEvaluation,
@@ -40,6 +41,7 @@ import {
   type ValidationContext,
 } from "./core/contracts.ts";
 import { renderExplanation } from "./explain/renderer.ts";
+import { buildRefutations } from "./explain/refutation-builder.ts";
 import { extractFacts, type EvidenceFact } from "./explain/evidence-providers.ts";
 import { buildEvidenceGraph } from "./explain/graph-builder.ts";
 import { planExplanations } from "./explain/planner.ts";
@@ -301,6 +303,7 @@ export async function analyzeGame(
     const moves: ClassifiedMove[] = [];
     const classificationLayer = createClassificationLayer();
     const allFacts: EvidenceFact[] = [];
+    const plyToPrePvId = new Map<number, string>();
 
     let prevSearch: { root: AnalysisRoot; pv: PVRecord } | null = null;
     let stopped = false; // set by fatal/abort to break outer loop cleanly
@@ -349,6 +352,9 @@ export async function analyzeGame(
         roots.set(outcome.root.id, outcome.root);
         pvs.set(outcome.pv.id, outcome.pv);
       }
+
+      // Record pre-move PV id for refutation building.
+      plyToPrePvId.set(plyNum, preSearch!.pv.id);
 
       // ── POST-MOVE: terminal or engine search ───────────
       const terminal = detectTerminal(toPos.fen);
@@ -554,10 +560,26 @@ export async function analyzeGame(
       }
     }
 
+    // Stage 5 Day 5 — refutations for Mistake/Blunder plies.
+    let refutations = new Map<number, RefutationLine>();
+    try {
+      const gameForRef: AnalyzedGame = {
+        pgn, status: "partial", failures, roots, pvs, moves,
+        explanations, localizedExplanations, refutations: new Map(),
+        config,
+      };
+      refutations = buildRefutations(gameForRef, plyToPrePvId);
+    } catch (e) {
+      failures.push({
+        ply: 0, stage: "explanation",
+        reason: `Refutation build failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+
     const status = failures.length === 0 ? "complete" : "partial";
     return {
       pgn, status, failures, roots, pvs, moves,
-      explanations, localizedExplanations, refutations: new Map(), config,
+      explanations, localizedExplanations, refutations, config,
     };
   } finally {
     if (ownsEngine) {
