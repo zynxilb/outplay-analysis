@@ -32,7 +32,6 @@ const SAN_TO_UCI: Record<string, string> = {
   "d4": "d2d4",
   "e5": "e7e5",
   "d5": "d7d5",
-  "Qa2": "d1a2",
   "Ra2": "a1a2",
 };
 
