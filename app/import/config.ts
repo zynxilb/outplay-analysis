@@ -19,7 +19,7 @@ export const ANALYSIS_CONFIG: AnalysisConfig = {
     initialDepth: 10,
     refinementDepth: 14,
     finalDepth: 18,
-    initialTargetMs: 300,
+    initialTargetMs: 1500,
     reSearchMs: 300,
   },
   evaluation: {

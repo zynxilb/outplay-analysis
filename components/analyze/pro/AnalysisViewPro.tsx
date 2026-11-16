@@ -469,6 +469,9 @@ export function AnalysisViewPro({
                     </span>
                     {wMove ? (
                       <button
+                        data-ply={wMove.plyIndex}
+                        data-quality={wMove.quality ?? "unanalyzed"}
+                        data-san={wMove.san}
                         onClick={() => goToPly(wMove.plyIndex)}
                         title={wMove.quality ? QUALITY_META[wMove.quality].labelAr : "لم تُحلل هذه النقلة"}
                         aria-label={wMove.quality ? QUALITY_META[wMove.quality].labelAr : "لم تُحلل هذه النقلة"}
@@ -488,6 +491,9 @@ export function AnalysisViewPro({
                     )}
                     {bMove ? (
                       <button
+                        data-ply={bMove.plyIndex}
+                        data-quality={bMove.quality ?? "unanalyzed"}
+                        data-san={bMove.san}
                         onClick={() => goToPly(bMove.plyIndex)}
                         title={bMove.quality ? QUALITY_META[bMove.quality].labelAr : "لم تُحلل هذه النقلة"}
                         aria-label={bMove.quality ? QUALITY_META[bMove.quality].labelAr : "لم تُحلل هذه النقلة"}
