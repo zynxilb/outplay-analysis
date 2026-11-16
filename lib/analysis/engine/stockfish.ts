@@ -79,7 +79,7 @@ export class StockfishAdapter implements EngineLayer {
   private readonly idPrefix: string;
 
   constructor(opts: StockfishAdapterOptions = {}) {
-    this.workerUrl = opts.workerUrl ?? "/engine/stockfish-19-lite-single.js";
+    this.workerUrl = opts.workerUrl ?? "/engine/stockfish-19-lite.js";
     this.workerFactory = opts.workerFactory ?? ((url) => new Worker(url) as unknown as WorkerLike);
     this.initTimeoutMs = opts.initTimeoutMs ?? 30_000;
     this.searchTimeoutMs = opts.searchTimeoutMs ?? 30_000;
@@ -124,7 +124,30 @@ export class StockfishAdapter implements EngineLayer {
     if (this.state === "initializing") {
       if (trimmed === "uciok") {
         const cfg = this.engineConfig!;
-        this.worker!.postMessage(`setoption name Hash value ${cfg.hashMb}`);
+        
+
+        // Multi-threading: only if SharedArrayBuffer + crossOriginIsolated.
+
+        try {
+
+          const hasSAB = typeof SharedArrayBuffer !== "undefined";
+
+          const isolated = typeof globalThis.crossOriginIsolated !== "undefined"
+
+            && Boolean((globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated);
+
+          if (hasSAB && isolated) {
+
+            const cores = Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 4) - 1);
+
+            const threads = Math.min(4, cores);
+
+            this.worker!.postMessage(`setoption name Threads value ${threads}`);
+
+          }
+
+        } catch { /* best-effort */ }
+this.worker!.postMessage(`setoption name Hash value ${cfg.hashMb}`);
         this.worker!.postMessage(`setoption name MultiPV value ${cfg.multiPv}`);
         this.worker!.postMessage("isready");
       } else if (trimmed === "readyok") {
