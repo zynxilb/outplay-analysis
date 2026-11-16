@@ -81,7 +81,7 @@ export class StockfishAdapter implements EngineLayer {
   constructor(opts: StockfishAdapterOptions = {}) {
     this.workerUrl = opts.workerUrl ?? "/engine/stockfish-19-lite-single.js";
     this.workerFactory = opts.workerFactory ?? ((url) => new Worker(url) as unknown as WorkerLike);
-    this.initTimeoutMs = opts.initTimeoutMs ?? 10_000;
+    this.initTimeoutMs = opts.initTimeoutMs ?? 30_000;
     this.searchTimeoutMs = opts.searchTimeoutMs ?? 30_000;
     this.idPrefix = opts.idPrefix ?? "sf";
   }
