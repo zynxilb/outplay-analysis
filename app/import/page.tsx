@@ -34,7 +34,6 @@ export default function AnalyzePage() {
       // pipeline would return an empty partial result. The page keeps
       // ownership of disposal via the finally block.
       const game = await analyzeGame(pgn, ANALYSIS_CONFIG, {
-        budgetOverride: { kind: "depth", value: ANALYSIS_CONFIG.budgets.initialDepth },
         engine,
         signal: controller.signal,
       });

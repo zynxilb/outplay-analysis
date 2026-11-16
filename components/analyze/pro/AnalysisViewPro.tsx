@@ -270,9 +270,9 @@ export function AnalysisViewPro({
         </div>
       </header>
 
-      {/* Partial-analysis banner */}
+      {/* Partial-analysis banner + device-speed note */}
       {game.status !== "complete" && (
-        <div dir="rtl" className="shrink-0 px-3 lg:px-4 pt-2 max-w-6xl w-full mx-auto">
+        <div dir="rtl" className="shrink-0 px-3 lg:px-4 pt-2 max-w-6xl w-full mx-auto space-y-1">
           <div className="bg-[#E0B252]/10 border border-[#E0B252]/30 text-[#E0B252] text-xs sm:text-sm px-3 py-2 rounded-lg">
             تحليل جزئي — بعض النقلات لم تُحلَّل. النتائج الظاهرة مبنية على ما اكتمل فقط.
             {game.failures.length > 0 && (
@@ -281,6 +281,9 @@ export function AnalysisViewPro({
               </span>
             )}
           </div>
+          <p className="text-[11px] text-[#6D6D75] px-1">
+            تنبيه: على الأجهزة البطيئة، قد تختلف دقة التصنيف عن الأجهزة الأسرع. استخدم جهازاً حديثاً للحصول على أفضل النتائج.
+          </p>
         </div>
       )}
 

@@ -16,9 +16,9 @@ export const ANALYSIS_CONFIG: AnalysisConfig = {
   version: "beta-1",
   engine: { identity: "sf-19.0.1-lite-single", hashMb: 32, multiPv: 1 },
   budgets: {
-    initialDepth: 16,
-    refinementDepth: 16,
-    finalDepth: 16,
+    initialDepth: 10,
+    refinementDepth: 14,
+    finalDepth: 18,
     initialTargetMs: 1500,
     reSearchMs: 300,
   },
