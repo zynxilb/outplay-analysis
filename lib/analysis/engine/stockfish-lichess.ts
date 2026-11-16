@@ -70,19 +70,39 @@ export class StockfishLichessAdapter implements EngineLayer {
 
     const rootEval = this.evalToEvaluation(pv0);
 
+    // Legacy UCI castling normalization.
+    // Lichess returns "e1h1" / "e1a1" / "e8h8" / "e8a8" (Stockfish
+    // legacy form). chess.js 1.4 expects "e1g1" / "e1c1" / "e8g8" /
+    // "e8c8" and THROWS on the legacy form, which previously
+    // discarded the entire PV (including all legal moves before the
+    // castling move). This caused 19/33 plies to be marked
+    // "unanalyzed" in the Opera Game even though the Lichess HTTP
+    // response was 200 for every one.
+    const CASTLING_LEGACY: Record<string, string> = {
+      e1h1: "e1g1",
+      e1a1: "e1c1",
+      e8h8: "e8g8",
+      e8a8: "e8c8",
+    };
+
     const moves: PVMove[] = [];
     try {
       const c = new Chess(fen);
       for (let i = 0; i < uciMoves.length; i++) {
-        const uci = uciMoves[i];
+        const rawUci = uciMoves[i];
+        // Canonicalize BOTH the move we send to chess.js AND the UCI
+        // we store in PVMove. Storing the raw form would create a
+        // downstream mismatch: pipeline compares stored best-move
+        // UCI against the played move UCI (which is always canonical).
+        const canonicalUci = CASTLING_LEGACY[rawUci] ?? rawUci;
         const made = c.move({
-          from: uci.slice(0, 2),
-          to: uci.slice(2, 4),
-          promotion: uci.slice(4, 5) || undefined,
+          from: canonicalUci.slice(0, 2),
+          to: canonicalUci.slice(2, 4),
+          promotion: canonicalUci.slice(4, 5) || undefined,
         });
         if (!made) break;
         moves.push({
-          uci,
+          uci: canonicalUci,
           san: made.san,
           evalAfter: i === uciMoves.length - 1 ? rootEval : { type: "unknown" },
         });
