@@ -50,17 +50,27 @@ export default function AnalyzePage() {
       // PGN parse failure: analyzeGame returns partial with moves: [].
       if (game.moves.length === 0) {
         const parseFail = game.failures.find((f) => f.stage === "pgn_parse");
+        const searchFail = game.failures.find((f) => f.stage === "search");
+
         if (parseFail) {
           setPhase({
             kind: "error",
             message:
-              "تعذّر تحليل المباراة. تأكد من صحة صيغة PGN وحاول مرة أخرى.",
+              "تعذّر قراءة المباراة. تأكد من صحة صيغة PGN وحاول مرة أخرى.",
+          });
+          return;
+        }
+        if (searchFail) {
+          setPhase({
+            kind: "error",
+            message:
+              "تعذّر تشغيل محرك الشطرنج. جرب إعادة تحميل الصفحة، أو استخدم متصفحاً آخر (Chrome أو Firefox حديث). إن استمرت المشكلة، عطّل أي إضافات مانعة للإعلانات لهذا الموقع ثم أعد المحاولة.",
           });
           return;
         }
         setPhase({
           kind: "error",
-          message: "لا توجد نقلات قابلة للتحليل في هذه المباراة.",
+          message: "لم يتم العثور على نقلات قابلة للتحليل في هذه المباراة.",
         });
         return;
       }
