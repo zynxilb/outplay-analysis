@@ -2,5 +2,5 @@
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
 
-/engine/*
+/engine/*.wasm
   Content-Type: application/wasm
