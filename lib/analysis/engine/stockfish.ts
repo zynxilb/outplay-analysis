@@ -147,6 +147,29 @@ export class StockfishAdapter implements EngineLayer {
           }
 
         } catch { /* best-effort */ }
+
+
+        // Multi-threading: only if SharedArrayBuffer + crossOriginIsolated.
+
+        try {
+
+          const hasSAB = typeof SharedArrayBuffer !== "undefined";
+
+          const isolated = typeof globalThis.crossOriginIsolated !== "undefined"
+
+            && Boolean((globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated);
+
+          if (hasSAB && isolated) {
+
+            const cores = Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 4) - 1);
+
+            const threads = Math.min(4, cores);
+
+            this.worker!.postMessage(`setoption name Threads value ${threads}`);
+
+          }
+
+        } catch { /* best-effort */ }
 this.worker!.postMessage(`setoption name Hash value ${cfg.hashMb}`);
         this.worker!.postMessage(`setoption name MultiPV value ${cfg.multiPv}`);
         this.worker!.postMessage("isready");
