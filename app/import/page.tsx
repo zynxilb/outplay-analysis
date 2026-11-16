@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { analyzeGame } from "@/lib/analysis/pipeline";
-import { StockfishAdapter } from "@/lib/analysis/engine/stockfish";
+import { StockfishLichessAdapter } from "@/lib/analysis/engine/stockfish-lichess";
 import type { AnalyzedGame } from "@/lib/analysis/core/types";
 import { ANALYSIS_CONFIG } from "./config";
 import { ImportView } from "@/components/analyze/ImportView";
@@ -26,7 +26,7 @@ export default function AnalyzePage() {
 
     setPhase({ kind: "analyzing", pgn, startedAt: Date.now() });
 
-    const engine = new StockfishAdapter();
+    const engine = new StockfishLichessAdapter();
     try {
       // NOTE: analyzeGame() initializes any engine passed via
       // AnalyzeOptions.engine. Calling initialize() here would reject
